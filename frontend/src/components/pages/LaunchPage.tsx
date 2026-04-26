@@ -32,7 +32,14 @@ export function LaunchPage() {
     loadConfig()
   }, [])
 
-  const filteredVersions = versions.map(v => v.id)
+  const filteredVersions = versions
+    .filter(v => {
+      if (versionType === 'release') return v.type === 'release'
+      if (versionType === 'snapshot') return v.type === 'snapshot'
+      if (versionType === 'old') return v.type === 'old_alpha' || v.type === 'old_beta'
+      return false
+    })
+    .map(v => v.id)
 
   async function handleLaunch() {
     if (!selectedVersion) return
