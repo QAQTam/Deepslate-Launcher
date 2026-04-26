@@ -11,6 +11,9 @@ export function LaunchButton({ onClick, disabled, loading }: LaunchButtonProps) 
     <motion.button
       onClick={onClick}
       disabled={disabled || loading}
+      aria-label="启动游戏"
+      aria-disabled={disabled}
+      role="button"
       whileHover={{ scale: disabled ? 1 : 1.02 }}
       whileTap={{ scale: disabled ? 1 : 0.98 }}
       style={{

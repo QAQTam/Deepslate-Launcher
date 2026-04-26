@@ -20,6 +20,12 @@ export function SidebarNav({ items, activeId, onSelect, collapsed }: SidebarNavP
         <motion.button
           key={item.id}
           onClick={() => onSelect(item.id)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              onSelect(item.id)
+            }
+          }}
+          aria-label={collapsed ? item.label : undefined}
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
           style={{

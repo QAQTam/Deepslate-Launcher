@@ -47,6 +47,8 @@ export function VersionSelector({
           <button
             key={tab.id}
             onClick={() => onTabChange(tab.id)}
+            role="tab"
+            aria-selected={activeTab === tab.id}
             style={{
               flex: 1,
               padding: '10px 12px',
@@ -69,6 +71,7 @@ export function VersionSelector({
         value={selectedVersion}
         onChange={(e) => onVersionChange(e.target.value)}
         className="input select"
+        aria-label="选择 Minecraft 版本"
       >
         {versions.map((v) => (
           <option key={v} value={v}>{v}</option>
