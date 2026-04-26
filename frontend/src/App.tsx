@@ -1,36 +1,51 @@
-import { AppProvider } from './hooks/useAppState'
-import { Header } from './components/Header'
-import { ProfileSection } from './components/ProfileSection'
-import { VersionSection } from './components/VersionSection'
-import { DownloadSection } from './components/DownloadSection'
-import { DirectorySection } from './components/DirectorySection'
-import { JavaSection } from './components/JavaSection'
-import { LaunchSection } from './components/LaunchSection'
-import { ConfigSection } from './components/ConfigSection'
-import { StatusBar } from './components/StatusBar'
-import { SetupModal } from './modals/SetupModal'
-import { ProfileModal } from './modals/ProfileModal'
+import { useState } from 'react'
+import { Sidebar } from './components/layout/Sidebar'
+import { HomePage } from './components/pages/HomePage'
+import { LaunchPage } from './components/pages/LaunchPage'
+import { SettingsPage } from './components/pages/SettingsPage'
+import { NewsPage } from './components/pages/NewsPage'
+import { AppProvider } from './contexts/AppProvider'
 
-function App() {
+function AppContent() {
+  const [activePage, setActivePage] = useState('home')
+
+  const renderPage = () => {
+    switch (activePage) {
+      case 'home':
+        return <HomePage />
+      case 'launch':
+        return <LaunchPage />
+      case 'settings':
+        return <SettingsPage />
+      case 'news':
+        return <NewsPage />
+      default:
+        return <HomePage />
+    }
+  }
+
   return (
-    <AppProvider>
-      <div className="app">
-        <Header />
-        <main className="main">
-          <ProfileSection />
-          <VersionSection />
-          <DownloadSection />
-          <DirectorySection />
-          <JavaSection />
-          <LaunchSection />
-          <ConfigSection />
-          <StatusBar />
-        </main>
-        <SetupModal />
-        <ProfileModal />
-      </div>
-    </AppProvider>
+    <div style={{
+      display: 'flex',
+      minHeight: '100vh',
+      background: 'var(--bg-deep)',
+    }}>
+      <Sidebar activePage={activePage} onNavigate={setActivePage} />
+      <main style={{
+        marginLeft: '64px',
+        flex: 1,
+        minHeight: '100vh',
+      }}>
+        {renderPage()}
+      </main>
+    </div>
   )
 }
 
-export default App
+export default function App() {
+  return (
+    <AppProvider>
+      <AppContent />
+    </AppProvider>
+  )
+}
