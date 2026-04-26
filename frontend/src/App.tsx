@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Sidebar } from './components/layout/Sidebar'
 import { HomePage } from './components/pages/HomePage'
 import { LaunchPage } from './components/pages/LaunchPage'
@@ -8,6 +8,14 @@ import { AppProvider } from './contexts/AppProvider'
 
 function AppContent() {
   const [activePage, setActivePage] = useState('home')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
+  useEffect(() => {
+    const saved = localStorage.getItem('sidebar-collapsed')
+    if (saved) setSidebarCollapsed(JSON.parse(saved))
+  }, [])
+
+  const sidebarWidth = sidebarCollapsed ? 64 : 220
 
   const renderPage = () => {
     switch (activePage) {
@@ -30,11 +38,17 @@ function AppContent() {
       minHeight: '100vh',
       background: 'var(--bg-deep)',
     }}>
-      <Sidebar activePage={activePage} onNavigate={setActivePage} />
+      <Sidebar
+        activePage={activePage}
+        onNavigate={setActivePage}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+      />
       <main style={{
-        marginLeft: '64px',
+        marginLeft: `${sidebarWidth}px`,
         flex: 1,
         minHeight: '100vh',
+        transition: 'margin-left 0.3s ease',
       }}>
         {renderPage()}
       </main>

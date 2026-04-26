@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
-import { tauriInvoke } from '../../hooks/useTauriInvoke'
+import { tauriInvoke } from '../hooks/useTauriInvoke'
 
 interface VersionInfo {
   id: string

@@ -1,5 +1,4 @@
 import { motion } from 'framer-motion'
-import { useState, useEffect } from 'react'
 import { SidebarNav } from './SidebarNav'
 
 const NAV_ITEMS = [
@@ -11,22 +10,11 @@ const NAV_ITEMS = [
 interface SidebarProps {
   activePage: string
   onNavigate: (page: string) => void
+  collapsed: boolean
+  onToggleCollapse: () => void
 }
 
-export function Sidebar({ activePage, onNavigate }: SidebarProps) {
-  const [collapsed, setCollapsed] = useState(false)
-
-  useEffect(() => {
-    const saved = localStorage.getItem('sidebar-collapsed')
-    if (saved) setCollapsed(JSON.parse(saved))
-  }, [])
-
-  const toggleCollapsed = () => {
-    const newValue = !collapsed
-    setCollapsed(newValue)
-    localStorage.setItem('sidebar-collapsed', JSON.stringify(newValue))
-  }
-
+export function Sidebar({ activePage, onNavigate, collapsed, onToggleCollapse }: SidebarProps) {
   return (
     <motion.aside
       animate={{ width: collapsed ? 64 : 220 }}
@@ -64,7 +52,7 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
           </h1>
         )}
         <button
-          onClick={toggleCollapsed}
+          onClick={onToggleCollapse}
           style={{
             background: 'none',
             border: 'none',

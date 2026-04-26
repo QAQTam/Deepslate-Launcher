@@ -1,7 +1,20 @@
+import { useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { PageContainer } from '../layout/PageContainer'
+import { useVersion } from '../../contexts/VersionContext'
+import { useProfile } from '../../contexts/ProfileContext'
+import { useConfig } from '../../contexts/ConfigContext'
+import { useGame } from '../../contexts/GameContext'
 
 export function HomePage() {
+  const { selectedVersion, versionType } = useVersion()
+  const { selectedProfile } = useProfile()
+  const { status } = useConfig()
+  const { gameRunning, launching } = useGame()
+
+  const gameStatus = launching ? 'launching' : gameRunning ? 'running' : 'idle'
+  const statusText = launching ? '启动中...' : gameRunning ? '游戏中' : '已退出'
+
   return (
     <PageContainer title="首页">
       <motion.div
@@ -14,9 +27,30 @@ export function HomePage() {
           gap: '20px',
         }}
       >
-        <StatusCard title="当前版本" value="1.20.4" />
-        <StatusCard title="当前档案" value="Player123" />
-        <StatusCard title="游戏状态" value="已退出" status="idle" />
+        <StatusCard title="当前版本" value={selectedVersion || '未选择'} />
+        <StatusCard title="当前档案" value={selectedProfile?.name || '未登录'} />
+        <StatusCard title="游戏状态" value={statusText} status={gameStatus} />
+        <StatusCard title="版本类型" value={versionType === 'release' ? '正式版' : versionType === 'snapshot' ? '测试版' : '历史版'} />
+      </motion.div>
+
+      {/* Status Bar */}
+      <motion.div
+        variants={{ initial: { opacity: 0, y: 20 }, animate: { opacity: 1, y: 0 } }}
+        style={{
+          marginTop: '24px',
+          padding: '16px 20px',
+          background: 'rgba(139, 92, 246, 0.1)',
+          borderRadius: 'var(--radius-lg)',
+          border: '1px solid rgba(139, 92, 246, 0.2)',
+        }}
+      >
+        <p style={{
+          fontSize: '0.8rem',
+          fontFamily: 'var(--font-mono)',
+          color: 'var(--text-secondary)',
+        }}>
+          {status}
+        </p>
       </motion.div>
     </PageContainer>
   )
@@ -59,12 +93,16 @@ function StatusCard({ title, value, status = 'idle' }: StatusCardProps) {
           {value}
         </span>
         {status !== 'idle' && (
-          <span style={{
-            width: '8px',
-            height: '8px',
-            borderRadius: '50%',
-            background: statusColors[status],
-          }} />
+          <motion.span
+            animate={status === 'running' ? { scale: [1, 1.2, 1] } : { opacity: [1, 0.5, 1] }}
+            transition={{ duration: status === 'running' ? 1 : 0.8, repeat: Infinity }}
+            style={{
+              width: '8px',
+              height: '8px',
+              borderRadius: '50%',
+              background: statusColors[status],
+            }}
+          />
         )}
       </div>
     </motion.div>
