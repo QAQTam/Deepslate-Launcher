@@ -18,7 +18,7 @@ export function ProfileSelector({
   onSelect,
 }: ProfileSelectorProps) {
   return (
-    <div className="glass-card" style={{ padding: '20px' }}>
+    <div className="card" style={{ padding: '20px' }}>
       <h3 style={{
         fontFamily: 'var(--font-display)',
         fontSize: '0.8rem',
@@ -43,12 +43,12 @@ export function ProfileSelector({
               justifyContent: 'space-between',
               padding: '14px 16px',
               background: selectedProfile?.name === profile.name
-                ? 'rgba(139, 92, 246, 0.15)'
-                : 'rgba(30, 27, 75, 0.4)',
+                ? 'var(--accent-light)'
+                : 'var(--bg-card)',
               border: `1px solid ${
                 selectedProfile?.name === profile.name
                   ? 'var(--accent-primary)'
-                  : 'rgba(139, 92, 246, 0.1)'
+                  : 'var(--border-subtle)'
               }`,
               borderRadius: 'var(--radius-md)',
               cursor: 'pointer',
@@ -68,8 +68,8 @@ export function ProfileSelector({
               padding: '4px 8px',
               borderRadius: '9999px',
               background: profile.auth_method === 'Microsoft'
-                ? 'rgba(139, 92, 246, 0.2)'
-                : 'rgba(100, 100, 100, 0.2)',
+                ? 'var(--accent-light)'
+                : 'var(--border-default)',
               color: profile.auth_method === 'Microsoft'
                 ? 'var(--accent-primary)'
                 : 'var(--text-muted)',

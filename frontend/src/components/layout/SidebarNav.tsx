@@ -1,68 +1,76 @@
-import { motion } from 'framer-motion'
+import { motion } from 'framer-motion';
 
 interface NavItem {
-  id: string
-  label: string
-  icon: React.ReactNode
+  id: string;
+  label: string;
+  /** CSS color for the nav dot (e.g. 'var(--nav-launch)') */
+  color?: string;
 }
 
 interface SidebarNavProps {
-  items: NavItem[]
-  activeId: string
-  onSelect: (id: string) => void
-  collapsed: boolean
+  items: NavItem[];
+  activeId: string;
+  collapsed?: boolean;
+  onNavigate: (id: string) => void;
 }
 
-export function SidebarNav({ items, activeId, onSelect, collapsed }: SidebarNavProps) {
+export function SidebarNav({ items, activeId, collapsed, onNavigate }: SidebarNavProps) {
   return (
-    <nav style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-      {items.map((item) => (
-        <motion.button
-          key={item.id}
-          onClick={() => onSelect(item.id)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              onSelect(item.id)
-            }
-          }}
-          aria-label={collapsed ? item.label : undefined}
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-            padding: collapsed ? '12px' : '12px 16px',
-            background: activeId === item.id ? 'rgba(139, 92, 246, 0.2)' : 'transparent',
-            border: 'none',
-            borderRadius: 'var(--radius-md)',
-            color: activeId === item.id ? 'var(--accent-primary)' : 'var(--text-secondary)',
-            cursor: 'pointer',
-            transition: 'all 0.2s ease',
-            justifyContent: collapsed ? 'center' : 'flex-start',
-            width: '100%',
-            position: 'relative',
-          }}
-        >
-          <span style={{ fontSize: '20px' }}>{item.icon}</span>
-          {!collapsed && (
-            <span style={{ fontWeight: 500 }}>{item.label}</span>
-          )}
-          {activeId === item.id && (
-            <motion.div
-              layoutId="activeIndicator"
+    <nav className="nav-section">
+      {items.map((item) => {
+        const isActive = activeId === item.id;
+        const dotColor = item.color ?? 'var(--text-muted)';
+
+        return (
+          <button
+            key={item.id}
+            className={`nav-btn${isActive ? ' active' : ''}`}
+            onClick={() => onNavigate(item.id)}
+            style={{
+              borderRadius: 'var(--radius-md)',
+            }}
+          >
+            <motion.span
               style={{
-                position: 'absolute',
-                left: 0,
-                width: '3px',
-                height: '24px',
-                background: 'var(--accent-primary)',
-                borderRadius: '0 2px 2px 0',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                width: '100%',
               }}
-            />
-          )}
-        </motion.button>
-      ))}
+              whileHover={{ x: 2 }}
+              whileTap={{ scale: 0.98 }}
+            >
+              {/* Colored dot */}
+              <span
+                style={{
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  flexShrink: 0,
+                  background: dotColor,
+                  boxShadow: isActive
+                    ? `0 0 6px ${dotColor}`
+                    : 'none',
+                  transition: 'box-shadow 0.2s ease',
+                }}
+              />
+
+              {!collapsed && (
+                <span
+                  style={{
+                    fontSize: '0.85rem',
+                    fontWeight: isActive ? 600 : 400,
+                    color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {item.label}
+                </span>
+              )}
+            </motion.span>
+          </button>
+        );
+      })}
     </nav>
-  )
+  );
 }

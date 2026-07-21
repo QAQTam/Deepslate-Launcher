@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import { open, ask } from '@tauri-apps/plugin-dialog'
+import { listen } from '@tauri-apps/api/event'
 import { tauriInvoke } from './useTauriInvoke'
 import { useDownloadProgress } from './useDownloadProgress'
 import { useGameState } from './useGameState'
@@ -239,6 +240,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     loadProfiles()
   }, [])
 
+  // Listen for auth progress from backend
+  useEffect(() => {
+    const setup = async () => {
+      const unlisten = await listen<string>('auth-progress', (event) => {
+        setStatus(`认证: ${event.payload}`)
+      })
+      return unlisten
+    }
+    let unlistenFn: (() => void) | null = null
+    setup().then(fn => { unlistenFn = fn })
+    return () => { unlistenFn?.() }
+  }, [])
+
   async function selectRootDir() {
     try {
       const selected = await open({ directory: true, multiple: false, title: '选择根目录' })
@@ -444,11 +458,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function handleOpenMicrosoftAuth() {
     try {
-      await tauriInvoke('open_microsoft_auth')
-      setLoginMessage('请在浏览器中完成 Microsoft 登录，然后复制回调 URL 粘贴到下方')
-      setStatus('等待用户粘贴回调 URL...')
+      setStatus('正在通过微软登录...')
+      setLoginMessage('正在打开登录窗口，请在弹出的窗口中完成 Microsoft 登录')
+      const profile = await tauriInvoke<UserProfile>('login_microsoft')
+      setProfiles(prev => {
+        const idx = prev.findIndex(p => p.name === profile.name)
+        if (idx >= 0) {
+          const copy = [...prev]
+          copy[idx] = profile
+          return copy
+        }
+        return [...prev, profile]
+      })
+      setSelectedProfile(profile)
+      setMicrosoftCodeInput('')
+      setLoginMessage('登录成功')
+      setStatus('登录成功')
     } catch (e) {
-      setStatus(`打开登录窗口失败: ${e}`)
+      setStatus(`登录失败: ${e}`)
+      setLoginMessage('请尝试使用手动粘贴方式登录')
     }
   }
 

@@ -22,7 +22,7 @@ export function VersionSelector({
   onVersionChange,
 }: VersionSelectorProps) {
   return (
-    <div className="glass-card" style={{ padding: '20px' }}>
+    <div className="card" style={{ padding: '20px' }}>
       <h3 style={{
         fontFamily: 'var(--font-display)',
         fontSize: '0.8rem',
@@ -38,7 +38,7 @@ export function VersionSelector({
       <div style={{
         display: 'flex',
         gap: '4px',
-        background: 'rgba(30, 27, 75, 0.4)',
+        background: 'var(--bg-card)',
         padding: '4px',
         borderRadius: 'var(--radius-md)',
         marginBottom: '16px',

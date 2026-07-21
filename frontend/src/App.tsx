@@ -4,6 +4,7 @@ import { HomePage } from './components/pages/HomePage'
 import { LaunchPage } from './components/pages/LaunchPage'
 import { SettingsPage } from './components/pages/SettingsPage'
 import { NewsPage } from './components/pages/NewsPage'
+import { ModsPage } from './components/pages/ModsPage'
 import { AppProvider } from './contexts/AppProvider'
 
 function AppContent() {
@@ -15,8 +16,6 @@ function AppContent() {
     if (saved) setSidebarCollapsed(JSON.parse(saved))
   }, [])
 
-  const sidebarWidth = sidebarCollapsed ? 64 : 220
-
   const renderPage = () => {
     switch (activePage) {
       case 'home':
@@ -27,6 +26,8 @@ function AppContent() {
         return <SettingsPage />
       case 'news':
         return <NewsPage />
+      case 'mods':
+        return <ModsPage />
       default:
         return <HomePage />
     }
@@ -35,8 +36,9 @@ function AppContent() {
   return (
     <div style={{
       display: 'flex',
-      minHeight: '100vh',
-      background: 'var(--bg-deep)',
+      height: '100vh',
+      overflow: 'hidden',
+      background: 'var(--bg-page)',
     }}>
       <Sidebar
         activePage={activePage}
@@ -45,10 +47,9 @@ function AppContent() {
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
       <main style={{
-        marginLeft: `${sidebarWidth}px`,
         flex: 1,
-        minHeight: '100vh',
-        transition: 'margin-left 0.3s ease',
+        overflowY: 'auto',
+        height: '100vh',
       }}>
         {renderPage()}
       </main>

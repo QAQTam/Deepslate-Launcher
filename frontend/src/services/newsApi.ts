@@ -1,27 +1,42 @@
-interface NewsItem {
-  id: string
+import { tauriInvoke } from '../hooks/useTauriInvoke'
+
+export interface NewsItem {
   title: string
   description: string
-  link: string
-  pubDate: string
-  category: 'official' | 'community' | 'mod'
+  url: string
+  date: string
+  image_url?: string
+  author?: string
 }
 
-export async function fetchMinecraftNews(): Promise<NewsItem[]> {
-  // 使用 minecraft.net RSS feed
-  const RSS_URL = 'https://www.minecraft.net/content/minecraft-net/master/en-us/xml/public.blogs.en-us'
+export interface NewsResponse {
+  items: NewsItem[]
+  total: number
+  page: number
+}
 
-  try {
-    const response = await fetch(RSS_URL)
-    const text = await response.text()
-    // 简单的 XML 解析
-    const items: NewsItem[] = []
+export interface ArticleDetail {
+  title: string
+  description: string
+  author: string
+  date: string
+  image_url?: string
+  url: string
+  images: string[]
+}
 
-    // 实际项目中应使用 XML 解析库
-    // 此处为简化示例
-    return items
-  } catch (error) {
-    console.error('Failed to fetch news:', error)
-    return []
+export async function fetchMinecraftNews(page: number = 1): Promise<NewsResponse> {
+  const resp = await tauriInvoke<NewsResponse>('fetch_minecraft_news', { page })
+  return {
+    ...resp,
+    items: resp.items.map(item => ({
+      ...item,
+      date: item.date || '',
+      description: item.description || '阅读更多 →',
+    })),
   }
+}
+
+export async function fetchArticleDetail(url: string): Promise<ArticleDetail> {
+  return tauriInvoke<ArticleDetail>('fetch_article_detail', { url })
 }

@@ -22,7 +22,7 @@ export function LaunchButton({ onClick, disabled, loading }: LaunchButtonProps) 
         fontSize: '1.125rem',
         fontWeight: 700,
         background: disabled
-          ? 'rgba(100, 100, 100, 0.2)'
+          ? 'var(--bg-input)'
           : 'linear-gradient(135deg, var(--accent-primary), var(--accent-secondary))',
         border: 'none',
         borderRadius: 'var(--radius-lg)',

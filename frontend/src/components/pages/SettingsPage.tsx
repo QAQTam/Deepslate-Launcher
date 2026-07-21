@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { PageContainer } from '../layout/PageContainer'
 import { useConfig } from '../../contexts/ConfigContext'
+import { BackupSection } from '../BackupSection'
 
 export function SettingsPage() {
   const {
@@ -25,7 +26,7 @@ export function SettingsPage() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '600px' }}>
         {/* Directory Config */}
         <motion.div variants={{ initial: { opacity: 0, y: 20 }, animate: { opacity: 1, y: 0 } }}>
-          <div className="glass-card" style={{ padding: '20px' }}>
+          <div className="card" style={{ padding: '20px' }}>
             <h3 style={{
               fontFamily: 'var(--font-display)',
               fontSize: '0.8rem',
@@ -59,7 +60,7 @@ export function SettingsPage() {
 
         {/* Isolation Settings */}
         <motion.div variants={{ initial: { opacity: 0, y: 20 }, animate: { opacity: 1, y: 0 } }}>
-          <div className="glass-card" style={{ padding: '20px' }}>
+          <div className="card" style={{ padding: '20px' }}>
             <h3 style={{
               fontFamily: 'var(--font-display)',
               fontSize: '0.8rem',
@@ -99,9 +100,12 @@ export function SettingsPage() {
           </div>
         </motion.div>
 
+        {/* Backup */}
+        <BackupSection />
+
         {/* UI Mode */}
         <motion.div variants={{ initial: { opacity: 0, y: 20 }, animate: { opacity: 1, y: 0 } }}>
-          <div className="glass-card" style={{ padding: '20px' }}>
+          <div className="card" style={{ padding: '20px' }}>
             <h3 style={{
               fontFamily: 'var(--font-display)',
               fontSize: '0.8rem',
@@ -115,7 +119,7 @@ export function SettingsPage() {
             <div style={{
               display: 'flex',
               gap: '8px',
-              background: 'rgba(30, 27, 75, 0.4)',
+              background: 'var(--bg-input)',
               padding: '4px',
               borderRadius: 'var(--radius-md)',
             }}>
@@ -147,7 +151,7 @@ export function SettingsPage() {
 
         {/* Danger Zone */}
         <motion.div variants={{ initial: { opacity: 0, y: 20 }, animate: { opacity: 1, y: 0 } }}>
-          <div className="glass-card" style={{
+          <div className="card" style={{
             padding: '20px',
             borderColor: 'rgba(239, 68, 68, 0.3)',
           }}>

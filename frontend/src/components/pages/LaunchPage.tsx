@@ -129,7 +129,7 @@ export function LaunchPage() {
         </motion.div>
 
         <motion.div variants={{ initial: { opacity: 0, y: 20 }, animate: { opacity: 1, y: 0 } }}>
-          <div className="glass-card" style={{ padding: '20px', height: '100%' }}>
+          <div className="card" style={{ padding: '20px', height: '100%' }}>
             <h3 style={{
               fontFamily: 'var(--font-display)',
               fontSize: '0.8rem',
@@ -200,7 +200,7 @@ export function LaunchPage() {
           animate={{ opacity: 1, y: 0 }}
           style={{ marginTop: '24px' }}
         >
-          <div className="glass-card" style={{ padding: '20px' }}>
+          <div className="card" style={{ padding: '20px' }}>
             <div style={{
               display: 'flex',
               justifyContent: 'space-between',

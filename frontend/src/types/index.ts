@@ -44,3 +44,11 @@ export interface AppConfig {
 }
 
 export type AuthMethod = 'Offline' | 'Microsoft'
+
+export interface ModInfo {
+  id: string
+  version: string
+  entry: string
+  file_name: string
+  enabled: boolean
+}

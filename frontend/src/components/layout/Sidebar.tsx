@@ -1,80 +1,131 @@
-import { motion } from 'framer-motion'
-import { SidebarNav } from './SidebarNav'
-
-const NAV_ITEMS = [
-  { id: 'home', label: '首页', icon: '🏠' },
-  { id: 'launch', label: '启动', icon: '🎮' },
-  { id: 'settings', label: '设置', icon: '⚙️' },
-]
+import { SidebarNav } from './SidebarNav';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface SidebarProps {
-  activePage: string
-  onNavigate: (page: string) => void
-  collapsed: boolean
-  onToggleCollapse: () => void
+  activePage: string;
+  onNavigate: (page: string) => void;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
 }
 
 export function Sidebar({ activePage, onNavigate, collapsed, onToggleCollapse }: SidebarProps) {
+  const navItems = [
+    { id: 'home',    label: '首页',  color: '#b8a088' },
+    { id: 'launch',  label: '启动',  color: 'var(--nav-launch)' },
+    { id: 'mods',    label: '模组',  color: 'var(--nav-mods)' },
+    { id: 'news',    label: '新闻',  color: 'var(--nav-news)' },
+    { id: 'settings',label: '设置',  color: 'var(--nav-settings)' },
+  ];
+
   return (
     <motion.aside
-      animate={{ width: collapsed ? 64 : 220 }}
-      transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+      className="sidebar"
+      initial={false}
+      animate={{ width: collapsed ? 56 : 220 }}
+      transition={{ duration: 0.2, ease: 'easeInOut' }}
       style={{
-        height: '100vh',
-        background: 'var(--bg-primary)',
-        borderRight: '1px solid rgba(139, 92, 246, 0.1)',
+        overflow: 'hidden',
+        flexShrink: 0,
         display: 'flex',
         flexDirection: 'column',
-        position: 'fixed',
-        left: 0,
-        top: 0,
-        zIndex: 100,
+        padding: 'var(--space-md) 8px',
       }}
     >
-      {/* Logo */}
-      <div style={{
-        padding: '20px 16px',
-        borderBottom: '1px solid rgba(139, 92, 246, 0.1)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: collapsed ? 'center' : 'space-between',
-      }}>
+      {/* Logo / brand */}
+      <AnimatePresence mode="wait">
         {!collapsed && (
-          <h1 style={{
-            fontFamily: 'var(--font-display)',
-            fontSize: '1.25rem',
-            fontWeight: 700,
-            background: 'linear-gradient(135deg, var(--accent-primary), var(--accent-secondary))',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-          }}>
-            Obsidian
-          </h1>
+          <motion.div
+            key="brand"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="sidebar-header"
+            style={{ paddingLeft: '8px' }}
+          >
+            Obsidian Portal
+          </motion.div>
         )}
-        <button
-          onClick={onToggleCollapse}
-          style={{
-            background: 'none',
-            border: 'none',
-            color: 'var(--text-muted)',
-            cursor: 'pointer',
-            padding: '4px',
-            fontSize: '18px',
-          }}
-        >
-          {collapsed ? '→' : '←'}
-        </button>
-      </div>
+      </AnimatePresence>
 
-      {/* Nav */}
-      <div style={{ flex: 1, padding: '16px 8px' }}>
-        <SidebarNav
-          items={NAV_ITEMS}
-          activeId={activePage}
-          onSelect={onNavigate}
-          collapsed={collapsed}
-        />
-      </div>
+      {/* Navigation */}
+      <SidebarNav
+        items={navItems}
+        activeId={activePage}
+        collapsed={collapsed}
+        onNavigate={onNavigate}
+      />
+
+      {/* Spacer */}
+      <div style={{ flex: 1 }} />
+
+      {/* Collapse toggle */}
+      <button
+        onClick={onToggleCollapse}
+        className="btn-ghost"
+        style={{
+          padding: '8px',
+          width: '100%',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          fontSize: '0.8rem',
+          color: 'var(--text-muted)',
+          marginBottom: 'var(--space-sm)',
+        }}
+        title={collapsed ? '展开侧边栏' : '折叠侧边栏'}
+      >
+        {collapsed ? '▶' : '◀'}
+      </button>
+
+      {/* User section (bottom) */}
+      <AnimatePresence mode="wait">
+        {!collapsed && (
+          <motion.div
+            key="user"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="sidebar-footer"
+            style={{ padding: '8px' }}
+          >
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+            }}>
+              <div style={{
+                width: '28px',
+                height: '28px',
+                borderRadius: '50%',
+                background: '#e0d6c4',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '0.7rem',
+                color: 'var(--text-secondary)',
+                flexShrink: 0,
+              }}>
+                S
+              </div>
+              <div>
+                <div style={{
+                  fontSize: '0.8rem',
+                  fontWeight: 500,
+                  color: 'var(--text-primary)',
+                }}>
+                  Steve
+                </div>
+                <div style={{
+                  fontSize: '0.65rem',
+                  color: 'var(--text-muted)',
+                }}>
+                  microsoft
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.aside>
-  )
+  );
 }
