@@ -21,14 +21,15 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const [launching, setLaunching] = useState(false)
 
   useEffect(() => {
-    const unlisten = listen<GameState>('game-state', (payload) => {
-      if (payload.state === 'launching') {
+    const unlisten = listen<GameState>('game-state', (event) => {
+      const { state } = event.payload
+      if (state === 'launching') {
         setLaunching(true)
         setGameRunning(true)
-      } else if (payload.state === 'running') {
+      } else if (state === 'running') {
         setLaunching(false)
         setGameRunning(true)
-      } else if (payload.state === 'stopped') {
+      } else if (state === 'stopped') {
         setGameRunning(false)
         setLaunching(false)
       }

@@ -21,7 +21,8 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   const [progress, setProgress] = useState<DownloadProgress | null>(null)
 
   useEffect(() => {
-    const unlisten = listen<DownloadProgress>('download-progress', (payload) => {
+    const unlisten = listen<DownloadProgress>('download-progress', (event) => {
+      const payload = event.payload
       setProgress(payload)
       if (payload.percent === 100) {
         setDownloading(false)

@@ -1,4 +1,3 @@
-import { motion } from 'framer-motion'
 
 const TABS = [
   { id: 'release', label: '正式版' },

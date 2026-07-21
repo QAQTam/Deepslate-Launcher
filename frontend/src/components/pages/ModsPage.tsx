@@ -6,7 +6,6 @@ import { PageContainer } from "../layout/PageContainer"
 export function ModsPage() {
   const [mods, setMods] = useState<ModInfo[]>([])
   const [loading, setLoading] = useState(true)
-  const [gameDir, setGameDir] = useState("")
 
   useEffect(() => {
     loadMods()
@@ -16,7 +15,6 @@ export function ModsPage() {
     try {
       setLoading(true)
       const cfg: any = await invoke("get_config")
-      setGameDir(cfg.game_dir)
       const result: ModInfo[] = await invoke("list_mods", { gameDir: cfg.game_dir })
       setMods(result)
     } catch (e) {

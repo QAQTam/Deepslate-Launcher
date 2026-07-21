@@ -14,7 +14,7 @@ import { tauriInvoke } from '../../hooks/useTauriInvoke'
 const CONCURRENCY_OPTIONS = [4, 8, 12, 16, 24, 32, 64, 128]
 
 export function LaunchPage() {
-  const { versions, selectedVersion, versionType, setSelectedVersion, setVersionType, loadVersions, getFilteredVersions } = useVersion()
+  const { versions, selectedVersion, versionType, setSelectedVersion, setVersionType, loadVersions } = useVersion()
   const { profiles, selectedProfile, selectProfile, loadProfiles } = useProfile()
   const {
     javaList, selectedJava, setSelectedJava,
