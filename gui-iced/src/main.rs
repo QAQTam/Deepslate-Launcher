@@ -879,7 +879,11 @@ fn view(app: &App) -> Element<'_, Message> {
     .height(Length::Fill)
     .style(style::sidebar);
 
-    let content = scrollable(container(page_view(app)).padding(24));
+    // 页面自身按窗口尺寸布局（网格/弹性区域），不使用外层滚动
+    let content = container(page_view(app))
+        .padding(24)
+        .width(Length::Fill)
+        .height(Length::Fill);
 
     container(row![sidebar, content])
         .width(Length::Fill)
@@ -1129,6 +1133,14 @@ fn launch_page(app: &App, t: f32) -> Element<'_, Message> {
         .into(),
     );
 
+    // 双栏网格：左（版本/档案）右（Java/启动），整页不滚动
+    let left = column![enter(t, 0.00, version_card), enter(t, 0.12, profile_card)]
+        .spacing(16)
+        .width(Length::Fill);
+    let right = column![enter(t, 0.24, java_card), enter(t, 0.36, actions_card)]
+        .spacing(16)
+        .width(Length::Fill);
+
     column![
         text("启动").size(28).color(s.text_primary),
         text(format!(
@@ -1138,13 +1150,10 @@ fn launch_page(app: &App, t: f32) -> Element<'_, Message> {
         .size(11)
         .color(s.text_faint),
         rule::horizontal(1.0).style(style::rule_style),
-        enter(t, 0.00, version_card),
-        enter(t, 0.12, profile_card),
-        enter(t, 0.24, java_card),
-        enter(t, 0.36, actions_card),
+        row![left, right].spacing(16),
     ]
     .spacing(16)
-    .max_width(660)
+    .height(Length::Fill)
     .into()
 }
 
@@ -1242,7 +1251,8 @@ fn home_page(app: &App, t: f32) -> Element<'_, Message> {
         text(app.status.as_str()).size(12).color(s.text_muted),
     ]
     .spacing(16)
-    .max_width(660)
+    .width(Length::Fill)
+    .height(Length::Fill)
     .into()
 }
 
@@ -1327,10 +1337,16 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
             };
 
             column![
-                text(format!("存档备份 — {}", version.id)).size(15).color(s.text_primary),
+                row![
+                    text(format!("存档备份 — {}", version.id)).size(15).color(s.text_primary),
+                    Space::new().width(Length::Fill),
+                    create_btn,
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
                 text(format!("源目录: {}", saves_src.display())).size(11).color(s.text_muted),
-                create_btn,
-                list,
+                // 弹性列表区域：只在备份条目过多或窗口较小时出现内部滚动
+                scrollable(list).height(Length::Fill).width(Length::Fill),
                 if game_busy {
                     text("游戏运行中，恢复/备份已禁用").size(11).color(s.text_muted)
                 } else {
@@ -1338,6 +1354,8 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
                 },
             ]
             .spacing(8)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .into()
         }
         None => column![
@@ -1389,13 +1407,23 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
         .spacing(10)
         .into(),
     );
-    let root_card = section_card(
+    // 常规：根目录 + 下载并发数合并为一张卡
+    let general_card = section_card(
         s,
-        "根目录",
-        text_input("如 /home/xxx/Games/ObsidianLauncher", &app.config.root_dir)
-            .on_input(Message::RootDirChanged)
-            .style(style::text_field)
-            .into(),
+        "常规",
+        column![
+            text_input("根目录，如 /home/xxx/Games/ObsidianLauncher", &app.config.root_dir)
+                .on_input(Message::RootDirChanged)
+                .style(style::text_field),
+            row![
+                text("下载并发数").size(13).color(s.text_muted),
+                concurrency_picker,
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(10)
+        .into(),
     );
     let isolation_card = section_card(
         s,
@@ -1415,7 +1443,6 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
         .spacing(10)
         .into(),
     );
-    let concurrency_card = section_card(s, "下载并发数", concurrency_picker.into());
     let dirs_card = section_card(
         s,
         "实际目录",
@@ -1428,17 +1455,27 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
         .spacing(5)
         .into(),
     );
-    let backup_card: Element<Message> = container(backup_section).padding(16).style(style::card).into();
+    // 备份卡：弹性填充剩余高度，列表过长时只在卡内滚动
+    let backup_card: Element<Message> = container(backup_section)
+        .padding(16)
+        .style(style::card)
+        .height(Length::Fill)
+        .width(Length::Fill)
+        .into();
+
+    // 2×2 网格 + 底部弹性备份区，整页不滚动
+    let grid_left = column![enter(t, 0.00, general_card), enter(t, 0.10, appearance_card)]
+        .spacing(16)
+        .width(Length::Fill);
+    let grid_right = column![enter(t, 0.20, isolation_card), enter(t, 0.30, dirs_card)]
+        .spacing(16)
+        .width(Length::Fill);
 
     column![
         text("设置").size(28).color(s.text_primary),
         rule::horizontal(1.0).style(style::rule_style),
-        enter(t, 0.00, appearance_card),
-        enter(t, 0.10, root_card),
-        enter(t, 0.20, isolation_card),
-        enter(t, 0.30, concurrency_card),
-        enter(t, 0.40, dirs_card),
-        enter(t, 0.50, backup_card),
+        row![grid_left, grid_right].spacing(16),
+        enter(t, 0.40, backup_card),
         row![
             button(text("保存设置"))
                 .padding(8.0)
@@ -1452,7 +1489,8 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
             .color(s.text_faint),
     ]
     .spacing(16)
-    .max_width(680)
+    .width(Length::Fill)
+    .height(Length::Fill)
     .into()
 }
 
