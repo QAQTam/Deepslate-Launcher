@@ -101,6 +101,10 @@ struct App {
     // Microsoft 登录（浏览器授权 + 粘贴回调 URL）
     ms_code_input: String,
     ms_logging_in: bool,
+    // 设置页：存档备份（针对当前选中版本）
+    backups: Vec<String>,
+    pending_restore: Option<String>,
+    pending_delete: Option<String>,
     // 设置页危险区二次确认
     confirm_reset: bool,
 }
@@ -126,6 +130,9 @@ impl App {
             game_running: false,
             ms_code_input: String::new(),
             ms_logging_in: false,
+            backups: Vec::new(),
+            pending_restore: None,
+            pending_delete: None,
             confirm_reset: false,
         };
 
@@ -197,6 +204,15 @@ enum Message {
     SettingsSaved(Result<(), String>),
     ResetAllPressed,
     ResetAllDone(Result<(), String>),
+    // 存档备份
+    BackupCreatePressed,
+    BackupCreated(Result<String, String>),
+    BackupLoad(String),
+    BackupsLoaded(Result<Vec<String>, String>),
+    BackupRestorePressed(String),
+    BackupRestored(Result<(), String>),
+    BackupDeletePressed(String),
+    BackupDeleted(Result<(), String>),
     CoreEvent(CoreEvent),
 }
 
@@ -206,6 +222,14 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => {
             app.page = page;
+            app.pending_restore = None;
+            app.pending_delete = None;
+            app.confirm_reset = false;
+            if page == Page::Settings {
+                if let Some(v) = &app.selected_version {
+                    return load_backups(v.id.clone());
+                }
+            }
             Task::none()
         }
         Message::VersionsLoaded(Ok(versions)) => {
@@ -345,6 +369,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             let opts = launcher::launch::LaunchOptions {
                 version: version.id.clone(),
                 game_dir: launcher::config::resolve_game_dir(&app.config),
+                instance_dir: launcher::config::get_version_root(&app.config, &version.id),
                 username: profile.name,
                 uuid: profile.uuid,
                 runtime_dir: std::path::PathBuf::from(java.path),
@@ -498,6 +523,104 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.status = format!("重置失败: {}", e);
             Task::none()
         }
+        Message::BackupCreatePressed => {
+            let Some(version) = app.selected_version.as_ref().map(|v| v.id.clone()) else {
+                app.status = "请先在「启动」页选择一个版本".to_string();
+                return Task::none();
+            };
+            if app.game_running || app.launching {
+                app.status = "游戏运行中，不建议备份存档".to_string();
+                return Task::none();
+            }
+            app.status = "正在创建存档备份...".to_string();
+            Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || launcher::backup::create(&version))
+                        .await
+                        .map_err(|e| e.to_string())?
+                },
+                Message::BackupCreated,
+            )
+        }
+        Message::BackupCreated(Ok(name)) => {
+            app.status = format!("备份已创建: {}", name);
+            match app.selected_version.clone() {
+                Some(v) => load_backups(v.id),
+                None => Task::none(),
+            }
+        }
+        Message::BackupCreated(Err(e)) => {
+            app.status = format!("创建备份失败: {}", e);
+            Task::none()
+        }
+        Message::BackupLoad(version) => load_backups(version),
+        Message::BackupsLoaded(Ok(backups)) => {
+            app.backups = backups;
+            Task::none()
+        }
+        Message::BackupsLoaded(Err(e)) => {
+            app.status = format!("加载备份列表失败: {}", e);
+            Task::none()
+        }
+        Message::BackupRestorePressed(name) => {
+            if app.pending_restore.as_deref() == Some(name.as_str()) {
+                // 二次确认通过，执行恢复
+                app.pending_restore = None;
+                let Some(version) = app.selected_version.as_ref().map(|v| v.id.clone()) else {
+                    app.status = "请先选择版本".to_string();
+                    return Task::none();
+                };
+                app.status = "正在恢复存档...".to_string();
+                Task::perform(
+                    async move { launcher::backup::restore(&version, &name).await },
+                    Message::BackupRestored,
+                )
+            } else {
+                app.pending_restore = Some(name);
+                app.pending_delete = None;
+                app.status = "恢复会覆盖当前存档，再点一次确认".to_string();
+                Task::none()
+            }
+        }
+        Message::BackupRestored(Ok(())) => {
+            app.status = "存档已恢复".to_string();
+            match app.selected_version.clone() {
+                Some(v) => load_backups(v.id),
+                None => Task::none(),
+            }
+        }
+        Message::BackupRestored(Err(e)) => {
+            app.status = format!("恢复失败: {}", e);
+            Task::none()
+        }
+        Message::BackupDeletePressed(name) => {
+            if app.pending_delete.as_deref() == Some(name.as_str()) {
+                app.pending_delete = None;
+                let Some(version) = app.selected_version.as_ref().map(|v| v.id.clone()) else {
+                    app.status = "请先选择版本".to_string();
+                    return Task::none();
+                };
+                Task::perform(
+                    async move { launcher::backup::delete(&version, &name) },
+                    Message::BackupDeleted,
+                )
+            } else {
+                app.pending_delete = Some(name);
+                app.pending_restore = None;
+                Task::none()
+            }
+        }
+        Message::BackupDeleted(Ok(())) => {
+            app.status = "备份已删除".to_string();
+            match app.selected_version.clone() {
+                Some(v) => load_backups(v.id),
+                None => Task::none(),
+            }
+        }
+        Message::BackupDeleted(Err(e)) => {
+            app.status = format!("删除备份失败: {}", e);
+            Task::none()
+        }
         Message::CoreEvent(event) => match event {
             CoreEvent::DownloadProgress(p) => {
                 if p.percent >= 100 {
@@ -529,6 +652,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
         },
     }
+}
+
+/// 拉取指定版本的备份列表
+fn load_backups(version: String) -> Task<Message> {
+    Task::perform(async move { launcher::backup::list(&version) }, Message::BackupsLoaded)
 }
 
 /// 从粘贴的回调 URL 中提取授权码，也接受直接粘贴的裸 code
@@ -971,6 +1099,85 @@ fn settings_page(app: &App) -> Element<'_, Message> {
         format!("{}/game/versions", app.config.root_dir)
     };
 
+    // 存档备份区块（针对当前选中版本）
+    let backup_section: Element<Message> = match &app.selected_version {
+        Some(version) => {
+            let game_busy = app.game_running || app.launching;
+            let create_btn = {
+                let b = button(text("创建备份").color(Color::WHITE)).padding(8.0);
+                if game_busy {
+                    b
+                } else {
+                    b.style(button::primary).on_press(Message::BackupCreatePressed)
+                }
+            };
+
+            let saves_src = launcher::backup::version_saves_dir(&app.config, &version.id);
+            let list: Element<Message> = if app.backups.is_empty() {
+                text("暂无备份").size(12).color(TEXT_MUTED).into()
+            } else {
+                let rows = app
+                    .backups
+                    .iter()
+                    .map(|name| {
+                        let restoring = app.pending_restore.as_deref() == Some(name.as_str());
+                        let deleting = app.pending_delete.as_deref() == Some(name.as_str());
+                        let restore_btn = {
+                            let b = button(text(if restoring {
+                                "确认恢复？"
+                            } else {
+                                "恢复"
+                            })
+                            .size(12))
+                            .padding(4.0);
+                            let b = if restoring { b.style(button::danger) } else { b };
+                            if game_busy {
+                                b
+                            } else {
+                                b.on_press(Message::BackupRestorePressed(name.clone()))
+                            }
+                        };
+                        let delete_btn = {
+                            let b = button(text(if deleting { "确认删除？" } else { "删除" }).size(12))
+                                .padding(4.0);
+                            let b = if deleting { b.style(button::danger) } else { b };
+                            b.on_press(Message::BackupDeletePressed(name.clone()))
+                        };
+                        row![
+                            text(name.clone()).size(12),
+                            Space::new().width(Length::Fill),
+                            restore_btn,
+                            delete_btn,
+                        ]
+                        .spacing(6)
+                        .into()
+                    })
+                    .collect::<Vec<_>>();
+                column(rows).spacing(6).into()
+            };
+
+            column![
+                text(format!("存档备份 — {}", version.id)).size(15).color(TEXT_PRIMARY),
+                text(format!("源目录: {}", saves_src.display())).size(11).color(TEXT_MUTED),
+                create_btn,
+                list,
+                if game_busy {
+                    text("游戏运行中，恢复/备份已禁用").size(11).color(TEXT_MUTED)
+                } else {
+                    text("恢复会覆盖当前存档（自动保留最近 5 份备份）").size(11).color(TEXT_MUTED)
+                },
+            ]
+            .spacing(8)
+            .into()
+        }
+        None => column![
+            text("存档备份").size(15).color(TEXT_PRIMARY),
+            text("请先在「启动」页选择一个版本").size(12).color(TEXT_MUTED),
+        ]
+        .spacing(6)
+        .into(),
+    };
+
     const CONCURRENCY: [usize; 6] = [4, 8, 16, 32, 64, 128];
     let concurrency_picker = pick_list(
         CONCURRENCY.to_vec(),
@@ -1024,6 +1231,8 @@ fn settings_page(app: &App) -> Element<'_, Message> {
             text(format!("版本目录: {}", versions_dir)).size(12).color(TEXT_MUTED),
         ]
         .spacing(6),
+        rule::horizontal(2.0),
+        backup_section,
         rule::horizontal(2.0),
         row![
             button(text("保存设置").color(Color::WHITE))

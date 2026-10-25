@@ -22,7 +22,11 @@ const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manif
 #[derive(Debug, Clone)]
 pub struct LaunchOptions {
     pub version: String,
+    /// 文件目录：versions/libraries/assets/natives 的共享根
     pub game_dir: PathBuf,
+    /// 实例目录（--gameDir）：saves/options/logs 落盘位置。
+    /// 版本隔离时为 root/versions/{version}，否则与 game_dir 相同
+    pub instance_dir: PathBuf,
     pub username: String,
     pub uuid: String,
     pub runtime_dir: PathBuf,
@@ -572,7 +576,7 @@ pub async fn launch(
         .map(|p| p.to_string_lossy().to_string())
         .collect::<Vec<_>>()
         .join(if cfg!(windows) { ";" } else { ":" });
-    let game_dir_str = opt.game_dir.to_string_lossy().to_string();
+    let instance_dir_str = opt.instance_dir.to_string_lossy().to_string();
     let assets_dir = opt.game_dir.join("assets");
     let assets_dir_str = assets_dir.to_string_lossy().to_string();
 
@@ -628,7 +632,7 @@ pub async fn launch(
     game_args.push("--version".to_string());
     game_args.push(opt.version.clone());
     game_args.push("--gameDir".to_string());
-    game_args.push(game_dir_str.clone());
+    game_args.push(instance_dir_str.clone());
     game_args.push("--assetsDir".to_string());
     game_args.push(assets_dir_str.clone());
     game_args.push("--assetIndex".to_string());
@@ -658,7 +662,7 @@ pub async fn launch(
                 .replace("${auth_player_name}", &opt.username)
                 .replace("${auth_uuid}", &opt.uuid)
                 .replace("${auth_access_token}", &access_token)
-                .replace("${game_directory}", &game_dir_str)
+                .replace("${game_directory}", &instance_dir_str)
                 .replace("${assets_root}", &assets_dir_str)
                 .replace("${assets_index_name}", &full_version_json.asset_index.id)
                 .replace("${version_name}", &opt.version)
@@ -682,7 +686,7 @@ pub async fn launch(
         .arg(&classpath_str)
         .arg(&full_version_json.main_class)
         .args(&game_args)
-        .current_dir(&opt.game_dir)
+        .current_dir(&opt.instance_dir)
         .spawn()?;
 
     // 保存进程 ID 和 Handle
