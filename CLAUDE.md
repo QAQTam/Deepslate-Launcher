@@ -33,7 +33,7 @@ cargo build                       # Build the whole Rust workspace
 
 - **`src-tauri/`**: thin Tauri shell. `src-tauri/src/lib.rs` only bridges Tauri commands to `core` and forwards `CoreEvent` channels to frontend events (`download-progress`, `game-state`, `auth-progress`). All business logic lives in `core/`.
 
-- **`gui-iced/`** (bin `obsidian-iced`): iced 0.14 frontend, consumes `core` directly. Progress events flow through a static broadcast bus (`gui-iced/src/main.rs`: `EVENT_BUS` + `core_event_sender()`) into an iced `Subscription`. Currently implemented: sidebar shell + Launch page (version tabs/pickers, profile creation, Java scan, download progress, launch/kill). Home/News/Settings/Mods are placeholders. Run with `cargo run -p gui-iced`.
+- **`gui-iced/`** (bin `obsidian-iced`): iced 0.14 frontend, consumes `core` directly. Progress events flow through a static broadcast bus (`gui-iced/src/main.rs`: `EVENT_BUS` + `core_event_sender()`) into an iced `Subscription`. Implemented pages: Home (status overview + quick actions), Launch (version tabs/pickers, offline profile creation, Microsoft login via browser + pasted callback URL, Java scan, download progress, launch/kill), Settings (root dir, isolation toggles, download concurrency, save/reset), Mods (GhastLoader list/toggle/install). News is a placeholder. Run with `cargo run -p gui-iced`.
 
 ### Linux build prerequisites
 

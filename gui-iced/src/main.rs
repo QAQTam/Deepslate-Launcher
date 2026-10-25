@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 use iced::{
     Color, Element, Length, Size, Subscription, Task, Theme,
     futures::{SinkExt, Stream},
-    widget::{Space, button, column, container, pick_list, progress_bar, row, rule, scrollable, text, text_input},
+    widget::{Space, button, checkbox, column, container, pick_list, progress_bar, row, rule, scrollable, text, text_input},
 };
 use tokio::sync::{broadcast, mpsc};
 
@@ -102,6 +102,13 @@ struct App {
     progress: Option<launcher::download::DownloadProgress>,
     launching: bool,
     game_running: bool,
+    // Microsoft 登录（浏览器授权 + 粘贴回调 URL）
+    ms_code_input: String,
+    ms_logging_in: bool,
+    // Mods 页
+    mods: Vec<launcher::modmanager::ModInfo>,
+    // 设置页危险区二次确认
+    confirm_reset: bool,
 }
 
 impl App {
@@ -123,6 +130,10 @@ impl App {
             progress: None,
             launching: false,
             game_running: false,
+            ms_code_input: String::new(),
+            ms_logging_in: false,
+            mods: Vec::new(),
+            confirm_reset: false,
         };
 
         let load = Task::batch([
@@ -178,6 +189,27 @@ enum Message {
     LaunchFinished(Result<(), String>),
     KillPressed,
     KillFinished(Result<(), String>),
+    // Microsoft 登录
+    MsAuthPressed,
+    MsAuthOpened(Result<(), String>),
+    MsCodeChanged(String),
+    MsLoginPressed,
+    MsLoginFinished(Result<UserProfile, String>),
+    // 设置
+    RootDirChanged(String),
+    ToggleVersionIsolation(bool),
+    ToggleSavesIsolation(bool),
+    ConcurrencySelected(usize),
+    SaveSettings,
+    SettingsSaved(Result<(), String>),
+    ResetAllPressed,
+    ResetAllDone(Result<(), String>),
+    // Mods（GhastLoader）
+    ModsLoaded(Result<Vec<launcher::modmanager::ModInfo>, String>),
+    ToggleMod(String),
+    ModToggled(Result<(), String>),
+    InstallGhastloader,
+    GhastloaderInstalled(Result<String, String>),
     CoreEvent(CoreEvent),
 }
 
@@ -187,6 +219,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => {
             app.page = page;
+            if page == Page::Mods {
+                return load_mods(&app.config);
+            }
             Task::none()
         }
         Message::VersionsLoaded(Ok(versions)) => {
@@ -373,6 +408,154 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.status = format!("终止失败: {}", e);
             Task::none()
         }
+        Message::MsAuthPressed => {
+            app.status = "已打开浏览器，请在浏览器中完成 Microsoft 授权...".to_string();
+            let url = launcher::auth::get_auth_url();
+            Task::perform(
+                async move { open::that(url).map_err(|e| e.to_string()) },
+                Message::MsAuthOpened,
+            )
+        }
+        Message::MsAuthOpened(Ok(())) => Task::none(),
+        Message::MsAuthOpened(Err(e)) => {
+            app.status = format!("打开浏览器失败: {}", e);
+            Task::none()
+        }
+        Message::MsCodeChanged(code) => {
+            app.ms_code_input = code;
+            Task::none()
+        }
+        Message::MsLoginPressed => {
+            let Some(code) = extract_auth_code(&app.ms_code_input) else {
+                app.status = "未在输入中找到 code（可粘贴完整回调 URL 或仅 code 值）".to_string();
+                return Task::none();
+            };
+            let events = core_event_sender();
+            app.ms_logging_in = true;
+            app.status = "正在完成 Microsoft 登录...".to_string();
+            Task::perform(
+                async move {
+                    let online = launcher::auth::login_with_code(&code, &events).await?;
+                    launcher::profiles::upsert_online(online)
+                },
+                Message::MsLoginFinished,
+            )
+        }
+        Message::MsLoginFinished(Ok(profile)) => {
+            app.ms_logging_in = false;
+            app.ms_code_input.clear();
+            let existing = app.profiles.iter().position(|p| p.uuid == profile.uuid);
+            if let Some(i) = existing {
+                app.profiles[i] = profile.clone();
+            } else {
+                app.profiles.push(profile.clone());
+            }
+            app.selected_profile = Some(profile.clone());
+            app.status = format!("Microsoft 登录成功: {}", profile.name);
+            Task::none()
+        }
+        Message::MsLoginFinished(Err(e)) => {
+            app.ms_logging_in = false;
+            app.status = format!("登录失败: {}", e);
+            Task::none()
+        }
+        Message::RootDirChanged(dir) => {
+            app.config.root_dir = dir;
+            Task::none()
+        }
+        Message::ToggleVersionIsolation(on) => {
+            app.config.version_isolation = on;
+            Task::none()
+        }
+        Message::ToggleSavesIsolation(on) => {
+            app.config.saves_isolation = on;
+            Task::none()
+        }
+        Message::ConcurrencySelected(n) => {
+            app.config.download_concurrency = n;
+            Task::none()
+        }
+        Message::SaveSettings => {
+            let mut config = app.config.clone();
+            if let Some(java) = &app.selected_java {
+                config.java_path = Some(java.path.clone());
+            }
+            if let Some(profile) = &app.selected_profile {
+                config.last_profile = Some(profile.name.clone());
+            }
+            Task::perform(async move { launcher::config::save(&config) }, Message::SettingsSaved)
+        }
+        Message::SettingsSaved(Ok(())) => {
+            app.status = "设置已保存".to_string();
+            Task::none()
+        }
+        Message::SettingsSaved(Err(e)) => {
+            app.status = format!("保存设置失败: {}", e);
+            Task::none()
+        }
+        Message::ResetAllPressed => {
+            if app.confirm_reset {
+                app.confirm_reset = false;
+                Task::perform(async { launcher::config::reset_all() }, Message::ResetAllDone)
+            } else {
+                app.confirm_reset = true;
+                app.status = "再次点击红色按钮才会真正重置".to_string();
+                Task::none()
+            }
+        }
+        Message::ResetAllDone(Ok(())) => {
+            app.config = AppConfig::default();
+            app.profiles.clear();
+            app.selected_profile = None;
+            app.status = "所有配置已重置".to_string();
+            Task::perform(async { launcher::profiles::load() }, Message::ProfilesLoaded)
+        }
+        Message::ResetAllDone(Err(e)) => {
+            app.status = format!("重置失败: {}", e);
+            Task::none()
+        }
+        Message::ModsLoaded(Ok(mods)) => {
+            app.mods = mods;
+            Task::none()
+        }
+        Message::ModsLoaded(Err(e)) => {
+            app.mods.clear();
+            app.status = format!("加载 mod 列表失败: {}", e);
+            Task::none()
+        }
+        Message::ToggleMod(id) => {
+            let game_dir = launcher::config::resolve_game_dir(&app.config).to_string_lossy().to_string();
+            let enabled = app
+                .mods
+                .iter()
+                .find(|m| m.id == id)
+                .map(|m| !m.enabled)
+                .unwrap_or(true);
+            Task::perform(
+                async move { launcher::modmanager::toggle_mod(&game_dir, &id, enabled) },
+                Message::ModToggled,
+            )
+        }
+        Message::ModToggled(Ok(())) => load_mods(&app.config),
+        Message::ModToggled(Err(e)) => {
+            app.status = format!("切换 mod 状态失败: {}", e);
+            Task::none()
+        }
+        Message::InstallGhastloader => {
+            let game_dir = launcher::config::resolve_game_dir(&app.config).to_string_lossy().to_string();
+            Task::perform(
+                async move { launcher::modmanager::install_ghastloader(&game_dir) },
+                Message::GhastloaderInstalled,
+            )
+        }
+        Message::GhastloaderInstalled(Ok(result)) => {
+            app.status = format!("GhastLoader: {}", result);
+            load_mods(&app.config)
+        }
+        Message::GhastloaderInstalled(Err(e)) => {
+            app.status = format!("GhastLoader 安装失败: {}", e);
+            Task::none()
+        }
         Message::CoreEvent(event) => match event {
             CoreEvent::DownloadProgress(p) => {
                 if p.percent >= 100 {
@@ -404,6 +587,27 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
         },
     }
+}
+
+/// 拉取 mod 列表（切换到 Mods 页 / 操作完成后刷新）
+fn load_mods(config: &AppConfig) -> Task<Message> {
+    let game_dir = launcher::config::resolve_game_dir(config).to_string_lossy().to_string();
+    Task::perform(async move { launcher::modmanager::list_mods(&game_dir) }, Message::ModsLoaded)
+}
+
+/// 从粘贴的回调 URL 中提取授权码，也接受直接粘贴的裸 code
+fn extract_auth_code(input: &str) -> Option<String> {
+    if let Some(pos) = input.find("code=") {
+        let rest = &input[pos + 5..];
+        let end = rest.find('&').unwrap_or(rest.len());
+        let code = rest[..end].trim();
+        if !code.is_empty() {
+            return Some(code.to_string());
+        }
+    }
+    let trimmed = input.trim();
+    (!trimmed.is_empty() && !trimmed.contains(' ') && !trimmed.contains("://"))
+        .then(|| trimmed.to_string())
 }
 
 /// 在 blocking 线程池跑 Java 扫描（内部是子进程调用，会阻塞）
@@ -540,8 +744,11 @@ fn game_state_label(app: &App) -> &'static str {
 fn page_view(app: &App) -> Element<'_, Message> {
     match app.page {
         Page::Launch => launch_page(app),
-        other => column![
-            text(other.label()).size(24).color(TEXT_PRIMARY),
+        Page::Home => home_page(app),
+        Page::Settings => settings_page(app),
+        Page::Mods => mods_page(app),
+        Page::News => column![
+            text("新闻").size(24).color(TEXT_PRIMARY),
             text("该页面尚未迁移到 iced 版，敬请期待。")
                 .size(14)
                 .color(TEXT_MUTED),
@@ -549,6 +756,39 @@ fn page_view(app: &App) -> Element<'_, Message> {
         .spacing(12)
         .into(),
     }
+}
+
+/// Microsoft 登录：系统浏览器授权 + 粘贴回调 URL（webview 无法自动捕获 code）
+fn ms_login_section(app: &App) -> Element<'_, Message> {
+    let login_btn = {
+        let b = button(text("完成登录").color(Color::WHITE)).padding(6.0);
+        if app.ms_logging_in || app.ms_code_input.trim().is_empty() {
+            b
+        } else {
+            b.style(button::primary).on_press(Message::MsLoginPressed)
+        }
+    };
+
+    column![
+        row![
+            button(text("打开微软登录页").size(13))
+                .padding(6.0)
+                .on_press(Message::MsAuthPressed),
+            text("浏览器完成授权后，把跳转到的 URL 粘贴到下面")
+                .size(11)
+                .color(TEXT_MUTED),
+        ]
+        .spacing(8),
+        row![
+            text_input("粘贴回调 URL（含 code=...）", &app.ms_code_input)
+                .on_input(Message::MsCodeChanged)
+                .on_submit(Message::MsLoginPressed),
+            login_btn,
+        ]
+        .spacing(8),
+    ]
+    .spacing(6)
+    .into()
 }
 
 fn launch_page(app: &App) -> Element<'_, Message> {
@@ -675,6 +915,7 @@ fn launch_page(app: &App) -> Element<'_, Message> {
         column![
             text("档案").size(15).color(TEXT_PRIMARY),
             row![profile_picker, new_profile_input].spacing(8),
+            ms_login_section(app),
         ]
         .spacing(8),
         rule::horizontal(2.0),
@@ -692,6 +933,247 @@ fn launch_page(app: &App) -> Element<'_, Message> {
     ]
     .spacing(14)
     .max_width(640)
+    .into()
+}
+
+// ── 首页 ─────────────────────────────────────────────────
+
+fn info_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
+    row![
+        text(label).size(13).color(TEXT_MUTED),
+        text(value).size(13),
+    ]
+    .spacing(8)
+    .into()
+}
+
+fn home_page(app: &App) -> Element<'_, Message> {    let info = info_row;
+
+    let profile_line = info(
+        "档案:",
+        app.selected_profile
+            .as_ref()
+            .map(|p| {
+                format!(
+                    "{}（{}）",
+                    p.name,
+                    if p.is_online() { "在线" } else { "离线" }
+                )
+            })
+            .unwrap_or_else(|| "未选择".to_string()),
+    );
+    let version_line = info(
+        "版本:",
+        app.selected_version
+            .as_ref()
+            .map(|v| v.id.clone())
+            .unwrap_or_else(|| "未选择".to_string()),
+    );
+    let java_line = info(
+        "Java:",
+        app.selected_java
+            .as_ref()
+            .map(|j| j.version.clone())
+            .unwrap_or_else(|| "未找到".to_string()),
+    );
+    let state_line = info("游戏:", game_state_label(app).to_string());
+    let root_line = info("根目录:", app.config.root_dir.clone());
+
+    let status_card = container(
+        column![
+            text("当前状态").size(16).color(TEXT_PRIMARY),
+            profile_line,
+            version_line,
+            java_line,
+            state_line,
+            root_line,
+        ]
+        .spacing(6),
+    )
+    .padding(16)
+    .style(card_style);
+
+    let launch_btn = if app.game_running || app.launching {
+        button(text("终止游戏").color(Color::WHITE))
+            .padding(8.0)
+            .style(button::danger)
+            .on_press(Message::KillPressed)
+    } else {
+        let b = button(text("启动游戏").color(Color::WHITE)).padding(8.0);
+        let ready = app.selected_version.is_some() && app.selected_profile.is_some()
+            && app.selected_java.is_some();
+        if ready {
+            b.style(button::primary).on_press(Message::LaunchPressed)
+        } else {
+            b
+        }
+    };
+
+    let download_btn = {
+        let b = button(text("下载当前版本").color(Color::WHITE)).padding(8.0);
+        if app.downloading || app.selected_version.is_none() {
+            b
+        } else {
+            b.style(button::primary).on_press(Message::DownloadPressed)
+        }
+    };
+
+    column![
+        text("首页").size(26).color(TEXT_PRIMARY),
+        status_card,
+        row![launch_btn, download_btn,].spacing(12),
+        text("提示：版本 / 档案 / Java 在「启动」页选择；目录与隔离选项在「设置」页。")
+            .size(12)
+            .color(TEXT_MUTED),
+        text(app.status.as_str()).size(12).color(TEXT_MUTED),
+    ]
+    .spacing(14)
+    .max_width(640)
+    .into()
+}
+
+// ── 设置页 ───────────────────────────────────────────────
+
+fn settings_page(app: &App) -> Element<'_, Message> {
+    let config_path = launcher::config::config_path()
+        .map(|p| p.join("config.json").display().to_string())
+        .unwrap_or_else(|e| e);
+    let game_dir = launcher::config::resolve_game_dir(&app.config).display().to_string();
+    let saves_dir = format!("{}/saves", app.config.root_dir);
+    let versions_dir = if app.config.version_isolation {
+        format!("{}/versions", app.config.root_dir)
+    } else {
+        format!("{}/game/versions", app.config.root_dir)
+    };
+
+    const CONCURRENCY: [usize; 6] = [4, 8, 16, 32, 64, 128];
+    let concurrency_picker = pick_list(
+        CONCURRENCY.to_vec(),
+        CONCURRENCY
+            .iter()
+            .find(|&&c| c == app.config.download_concurrency),
+        Message::ConcurrencySelected,
+    )
+    .placeholder("并发数");
+
+    let reset_btn = if app.confirm_reset {
+        button(text("确认重置？（再点一次执行）").color(Color::WHITE))
+            .padding(8.0)
+            .style(button::danger)
+            .on_press(Message::ResetAllPressed)
+    } else {
+        button(text("重置所有配置").color(Color::WHITE))
+            .padding(8.0)
+            .style(button::danger)
+            .on_press(Message::ResetAllPressed)
+    };
+
+    column![
+        text("设置").size(26).color(TEXT_PRIMARY),
+        column![
+            text("根目录").size(15).color(TEXT_PRIMARY),
+            text_input("如 /home/xxx/Games/ObsidianLauncher", &app.config.root_dir)
+                .on_input(Message::RootDirChanged),
+        ]
+        .spacing(8),
+        column![
+            checkbox(app.config.version_isolation)
+                .label("版本隔离（每个版本独立目录）")
+                .on_toggle(Message::ToggleVersionIsolation),
+            checkbox(app.config.saves_isolation)
+                .label("存档隔离（实验级，每版本独立 saves 符号链接）")
+                .on_toggle(Message::ToggleSavesIsolation),
+        ]
+        .spacing(8),
+        column![
+            text("下载并发数").size(15).color(TEXT_PRIMARY),
+            concurrency_picker,
+        ]
+        .spacing(8),
+        rule::horizontal(2.0),
+        column![
+            text("实际目录").size(15).color(TEXT_PRIMARY),
+            text(format!("配置文件: {}", config_path)).size(12).color(TEXT_MUTED),
+            text(format!("游戏目录: {}", game_dir)).size(12).color(TEXT_MUTED),
+            text(format!("存档目录: {}", saves_dir)).size(12).color(TEXT_MUTED),
+            text(format!("版本目录: {}", versions_dir)).size(12).color(TEXT_MUTED),
+        ]
+        .spacing(6),
+        rule::horizontal(2.0),
+        row![
+            button(text("保存设置").color(Color::WHITE))
+                .padding(8.0)
+                .style(button::primary)
+                .on_press(Message::SaveSettings),
+            reset_btn,
+        ]
+        .spacing(12),
+        text("保存时会同时记录当前选中的档案与 Java 路径。重置会删除 config.json 与 profiles.json（游戏文件不受影响）。")
+            .size(12)
+            .color(TEXT_MUTED),
+    ]
+    .spacing(14)
+    .max_width(640)
+    .into()
+}
+
+// ── Mods 页（GhastLoader） ───────────────────────────────
+
+fn mods_page(app: &App) -> Element<'_, Message> {
+    let install_btn = button(text("安装 / 更新 GhastLoader").color(Color::WHITE))
+        .padding(8.0)
+        .style(button::primary)
+        .on_press(Message::InstallGhastloader);
+
+    let list: Element<Message> = if app.mods.is_empty() {
+        text("mods/ 目录暂无 mod。将含 mod.json 的 .jar 放入游戏目录的 mods/ 后切回本页即可。")
+            .size(13)
+            .color(TEXT_MUTED)
+            .into()
+    } else {
+        let rows = app
+            .mods
+            .iter()
+            .map(|m| {
+                let toggle_label = if m.enabled { "已启用" } else { "已禁用" };
+                container(row![
+                    column![
+                        text(m.id.clone()).size(14).color(if m.enabled {
+                            TEXT_PRIMARY
+                        } else {
+                            TEXT_MUTED
+                        }),
+                        text(format!("v{} — {}", m.version, m.entry)).size(11).color(TEXT_MUTED),
+                    ]
+                    .spacing(2),
+                    Space::new().width(Length::Fill),
+                    button(text(toggle_label).size(12))
+                        .padding(6.0)
+                        .on_press(Message::ToggleMod(m.id.clone())),
+                ]
+                .spacing(8))
+                .padding(12)
+                .style(card_style)
+                .into()
+            })
+            .collect::<Vec<_>>();
+
+        column(rows).spacing(10).into()
+    };
+
+    column![
+        text("Mods — GhastLoader").size(26).color(TEXT_PRIMARY),
+        row![
+            install_btn,
+            text("Java Agent 事件总线式 mod 加载器，启动游戏时自动注入。")
+                .size(12)
+                .color(TEXT_MUTED),
+        ]
+        .spacing(12),
+        list,
+    ]
+    .spacing(14)
+    .max_width(680)
     .into()
 }
 
