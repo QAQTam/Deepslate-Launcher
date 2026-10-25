@@ -1,16 +1,17 @@
-use crate::AuthMethod;
 use serde::Deserialize;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter};
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Child;
-use tokio::time::{sleep, Duration};
+use tokio::sync::mpsc;
 use zip::ZipArchive;
+
+use crate::auth::AuthMethod;
+use crate::events::{CoreEvent, GameState};
 
 static GAME_PROCESS: Mutex<Option<u32>> = Mutex::new(None);
 static GAME_HANDLE: std::sync::LazyLock<tokio::sync::Mutex<Option<Child>>> =
@@ -25,7 +26,7 @@ pub struct LaunchOptions {
     pub username: String,
     pub uuid: String,
     pub runtime_dir: PathBuf,
-    pub auth_method: crate::AuthMethod,
+    pub auth_method: AuthMethod,
     pub access_token: Option<String>,
 }
 
@@ -185,10 +186,16 @@ fn get_os_arch() -> &'static str {
     }
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, Clone, PartialEq)]
 pub struct JavaInfo {
     pub path: String,
     pub version: String,
+}
+
+impl std::fmt::Display for JavaInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Java {} — {}", self.version, self.path)
+    }
 }
 
 pub fn scan_java() -> Result<Vec<JavaInfo>, String> {
@@ -436,16 +443,20 @@ fn apply_rules(args: &[GameArgument]) -> Vec<String> {
     result
 }
 
-pub async fn launch(app: AppHandle, opt: LaunchOptions) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn launch(
+    opt: LaunchOptions,
+    events: mpsc::Sender<CoreEvent>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .build()?;
 
     // 发送游戏启动事件
-    let _ = app.emit("game-state", serde_json::json!({
-        "state": "launching",
-        "version": opt.version
-    }));
+    let _ = events
+        .send(CoreEvent::GameState(GameState::Launching {
+            version: opt.version.clone(),
+        }))
+        .await;
 
     // 1. 获取 version manifest
     println!("获取版本列表...");
@@ -556,7 +567,11 @@ pub async fn launch(app: AppHandle, opt: LaunchOptions) -> Result<(), Box<dyn st
 
     // 替换占位符
     let natives_dir_str = natives_dir.to_string_lossy().to_string();
-    let classpath_str = classpath.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>().join(if cfg!(windows) { ";" } else { ":" });
+    let classpath_str = classpath
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join(if cfg!(windows) { ";" } else { ":" });
     let game_dir_str = opt.game_dir.to_string_lossy().to_string();
     let assets_dir = opt.game_dir.join("assets");
     let assets_dir_str = assets_dir.to_string_lossy().to_string();
@@ -672,7 +687,7 @@ pub async fn launch(app: AppHandle, opt: LaunchOptions) -> Result<(), Box<dyn st
     println!("主类: {}", full_version_json.main_class);
     println!("游戏参数: {}\n", game_args.join(" "));
 
-    let mut child = tokio::process::Command::new(&java_path)
+    let child = tokio::process::Command::new(&java_path)
         .args(&jvm_args)
         .arg("-cp")
         .arg(&classpath_str)
@@ -694,10 +709,7 @@ pub async fn launch(app: AppHandle, opt: LaunchOptions) -> Result<(), Box<dyn st
     println!("游戏进程 PID: {}", pid);
 
     // 发送游戏运行中事件
-    let _ = app.emit("game-state", serde_json::json!({
-        "state": "running",
-        "pid": pid
-    }));
+    let _ = events.send(CoreEvent::GameState(GameState::Running { pid })).await;
 
     // 等待进程结束 - 先取出 handle 避免跨 await 持有锁
     let exit_status = {
@@ -723,10 +735,11 @@ pub async fn launch(app: AppHandle, opt: LaunchOptions) -> Result<(), Box<dyn st
     }
 
     // 发送游戏退出事件
-    let _ = app.emit("game-state", serde_json::json!({
-        "state": "stopped",
-        "exit_code": exit_status.code().unwrap_or(-1)
-    }));
+    let _ = events
+        .send(CoreEvent::GameState(GameState::Stopped {
+            exit_code: exit_status.code().unwrap_or(-1),
+        }))
+        .await;
 
     if !exit_status.success() {
         return Err(format!("游戏进程退出码: {:?}", exit_status.code()).into());

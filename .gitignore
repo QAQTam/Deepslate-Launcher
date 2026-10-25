@@ -6,7 +6,8 @@ dist/
 dist-ssr/
 *.local
 
-# Tauri
+# Rust workspace
+/target/
 src-tauri/target/
 src-tauri/release/
 src-tauri/debug/

@@ -5,15 +5,16 @@ use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tauri::{AppHandle, Emitter};
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Semaphore;
+use tokio::sync::{mpsc, Semaphore};
 use tokio::time::Duration;
+
+use crate::events::CoreEvent;
 
 pub const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest.json";
 
-#[derive(Clone, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DownloadProgress {
     pub current: usize,
     pub total: usize,
@@ -34,16 +35,40 @@ pub struct Latest {
     pub snapshot: String,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 pub struct VersionInfo {
     pub id: String,
+    /// "release" | "snapshot" | "old_beta" | "old_alpha"
     #[serde(rename = "type")]
-    #[allow(dead_code)]
     pub kind: String,
     pub url: String,
     #[serde(rename = "releaseTime")]
-    #[allow(dead_code)]
     pub release_time: String,
+}
+
+impl std::fmt::Display for VersionInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.id)
+    }
+}
+
+/// 获取全部版本列表（版本清单）
+pub async fn get_versions() -> Result<Vec<VersionInfo>, String> {
+    let client = Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let manifest: Manifest = client
+        .get(MANIFEST_URL)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(manifest.versions)
 }
 
 #[derive(Deserialize, Debug)]
@@ -127,18 +152,25 @@ struct DownloadTask {
     sha1: String,
 }
 
-pub async fn run(app: AppHandle, version: &str, game_dir: &PathBuf, concurrency: usize) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(
+    version: &str,
+    game_dir: &PathBuf,
+    concurrency: usize,
+    events: mpsc::Sender<CoreEvent>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .build()?;
 
     // 发送初始进度
-    let _ = app.emit("download-progress", DownloadProgress {
-        current: 0,
-        total: 100,
-        percent: 0,
-        current_file: "正在获取版本信息...".to_string(),
-    });
+    let _ = events
+        .send(CoreEvent::DownloadProgress(DownloadProgress {
+            current: 0,
+            total: 100,
+            percent: 0,
+            current_file: "正在获取版本信息...".to_string(),
+        }))
+        .await;
 
     // 1. 下载 version manifest
     println!("[1/5] 获取版本列表...");
@@ -192,9 +224,13 @@ pub async fn run(app: AppHandle, version: &str, game_dir: &PathBuf, concurrency:
         if let Some(rules) = &lib.rules {
             let allowed = rules.iter().any(|r| {
                 r.action == "allow"
-                    && r.os.as_ref().map_or(true, |os| {
-                        os.name.as_ref().map_or(true, |n| n == "windows" || n == "osx" || n == "linux")
-                    })
+                    && r.os
+                        .as_ref()
+                        .map_or(true, |os| {
+                            os.name
+                                .as_ref()
+                                .map_or(true, |n| n == "windows" || n == "osx" || n == "linux")
+                        })
             });
             if !allowed {
                 continue;
@@ -223,7 +259,10 @@ pub async fn run(app: AppHandle, version: &str, game_dir: &PathBuf, concurrency:
     println!("Asset 数量: {}", asset_count);
 
     // 保存 asset index JSON（游戏需要这个来定位资源）
-    let asset_index_path = game_dir.join("assets").join("indexes").join(format!("{}.json", version_json.asset_index.id));
+    let asset_index_path = game_dir
+        .join("assets")
+        .join("indexes")
+        .join(format!("{}.json", version_json.asset_index.id));
     fs::create_dir_all(asset_index_path.parent().unwrap()).await?;
     let mut file = File::create(&asset_index_path).await?;
     file.write_all(asset_index_text.as_bytes()).await?;
@@ -266,12 +305,14 @@ pub async fn run(app: AppHandle, version: &str, game_dir: &PathBuf, concurrency:
     let remaining = tasks_to_download.len();
     if remaining == 0 {
         println!("\n所有文件已存在，无需下载！");
-        let _ = app.emit("download-progress", DownloadProgress {
-            current: total_count,
-            total: total_count,
-            percent: 100,
-            current_file: "所有文件已存在".to_string(),
-        });
+        let _ = events
+            .send(CoreEvent::DownloadProgress(DownloadProgress {
+                current: total_count,
+                total: total_count,
+                percent: 100,
+                current_file: "所有文件已存在".to_string(),
+            }))
+            .await;
         return Ok(());
     }
 
@@ -281,7 +322,6 @@ pub async fn run(app: AppHandle, version: &str, game_dir: &PathBuf, concurrency:
     // 并发下载（信号量限制实际并发数，避免文件句柄耗尽）
     let client = std::sync::Arc::new(client);
     let total = tasks_to_download.len();
-    let app = std::sync::Arc::new(app);
     let downloaded = std::sync::atomic::AtomicUsize::new(0);
 
     // 每个并发约需 2 个文件句柄（网络响应体 + 磁盘写入），限制为 concurrency / 2
@@ -294,7 +334,7 @@ pub async fn run(app: AppHandle, version: &str, game_dir: &PathBuf, concurrency:
             let client = client.clone();
             let pb = pb.clone();
             let downloaded = &downloaded;
-            let app = app.clone();
+            let events = events.clone();
             let total = total;
             let sem = semaphore.clone();
             async move {
@@ -308,7 +348,7 @@ pub async fn run(app: AppHandle, version: &str, game_dir: &PathBuf, concurrency:
                     percent: ((done + 1) as f64 / total as f64 * 100.0) as u32,
                     current_file: "下载中...".to_string(),
                 };
-                let _ = app.emit("download-progress", progress);
+                let _ = events.send(CoreEvent::DownloadProgress(progress)).await;
             }
         })
         .buffer_unordered(concurrency)
@@ -316,12 +356,14 @@ pub async fn run(app: AppHandle, version: &str, game_dir: &PathBuf, concurrency:
         .await;
 
     pb.finish_with_message("完成！");
-    let _ = app.emit("download-progress", DownloadProgress {
-        current: total,
-        total,
-        percent: 100,
-        current_file: "下载完成".to_string(),
-    });
+    let _ = events
+        .send(CoreEvent::DownloadProgress(DownloadProgress {
+            current: total,
+            total,
+            percent: 100,
+            current_file: "下载完成".to_string(),
+        }))
+        .await;
 
     Ok(())
 }

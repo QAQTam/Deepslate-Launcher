@@ -14,8 +14,8 @@ export function ModsPage() {
   async function loadMods() {
     try {
       setLoading(true)
-      const cfg: any = await invoke("get_config")
-      const result: ModInfo[] = await invoke("list_mods", { gameDir: cfg.game_dir })
+      const gameDir = await invoke<string>("get_game_dir")
+      const result: ModInfo[] = await invoke("list_mods", { gameDir })
       setMods(result)
     } catch (e) {
       console.error("Failed to load mods:", e)
@@ -26,9 +26,9 @@ export function ModsPage() {
 
   async function handleToggle(mod: ModInfo) {
     try {
-      const cfg: any = await invoke("get_config")
+      const gameDir = await invoke<string>("get_game_dir")
       await invoke("toggle_mod", {
-        gameDir: cfg.game_dir,
+        gameDir,
         modId: mod.id,
         enabled: !mod.enabled,
       })
@@ -40,8 +40,8 @@ export function ModsPage() {
 
   async function handleInstallLoader() {
     try {
-      const cfg: any = await invoke("get_config")
-      const result = await invoke("install_ghastloader", { gameDir: cfg.game_dir })
+      const gameDir = await invoke<string>("get_game_dir")
+      const result = await invoke("install_ghastloader", { gameDir })
       alert(`GhastLoader: ${result}`)
     } catch (e: any) {
       alert(`安装失败: ${e}`)

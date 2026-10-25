@@ -13,16 +13,31 @@ pnpm dev        # Run Tauri dev mode (frontend + backend)
 pnpm build      # Build production Tauri app
 pnpm --filter frontend run dev    # Frontend only (Vite dev server)
 pnpm --filter frontend run build  # Frontend only build
+cargo run -p gui-iced             # Run the iced frontend
+cargo build                       # Build the whole Rust workspace
 ```
 
 ## Architecture
 
-### Tauri Backend (`src-tauri/src/`)
+### Cargo Workspace
 
-- **`lib.rs`**: Main entry point. Registers all Tauri commands and manages app lifecycle.
-- **`auth.rs`**: Microsoft OAuth 2.0 authentication flow (login.live.com → Xbox Live → XSTS → Minecraft Services).
-- **`download.rs`**: Downloads Minecraft versions, libraries, and assets from Mojang's CDN with SHA1 verification.
-- **`launch.rs`**: Game process spawning, Java runtime detection, native library extraction from JARs.
+- **`core/`** (`obsidian-launcher-core`): framework-free business logic. No Tauri/GUI dependencies; long-running tasks report progress via `tokio::sync::mpsc` channels carrying `CoreEvent` (defined in `core/src/events.rs`). A future iced/Slint GUI consumes the same channels.
+  - **`config.rs`**: AppConfig load/save, game/saves/versions directory resolution.
+  - **`profiles.rs`**: User profiles (offline + Microsoft), deterministic offline UUIDs.
+  - **`auth.rs`**: Microsoft OAuth 2.0 flow (login.live.com → Xbox Live → XSTS → Minecraft Services). Authorization happens in the system browser; the user pastes the callback URL back (`login_with_code`).
+  - **`download.rs`**: Downloads versions/libraries/assets from Mojang's CDN with SHA1 verification and bounded concurrency.
+  - **`launch.rs`**: Game process spawning (new `arguments` + legacy `minecraftArguments`, `inheritsFrom` merging, natives extraction), Java runtime scanning, GhastLoader javaagent injection.
+  - **`backup.rs`**: Saves symlink isolation, backup/restore via rsync/xcopy (Linux/Windows).
+  - **`news.rs`**: minecraft.net news feed + article scraping.
+  - **`modmanager.rs`**: GhastLoader mod list/toggle/install.
+
+- **`src-tauri/`**: thin Tauri shell. `src-tauri/src/lib.rs` only bridges Tauri commands to `core` and forwards `CoreEvent` channels to frontend events (`download-progress`, `game-state`, `auth-progress`). All business logic lives in `core/`.
+
+- **`gui-iced/`** (bin `obsidian-iced`): iced 0.14 frontend, consumes `core` directly. Progress events flow through a static broadcast bus (`gui-iced/src/main.rs`: `EVENT_BUS` + `core_event_sender()`) into an iced `Subscription`. Currently implemented: sidebar shell + Launch page (version tabs/pickers, profile creation, Java scan, download progress, launch/kill). Home/News/Settings/Mods are placeholders. Run with `cargo run -p gui-iced`.
+
+### Linux build prerequisites
+
+Building the Tauri shell requires system packages: `libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev libxdo-dev libssl-dev libayatana-appindicator3-dev`.
 
 ### State Management
 
@@ -47,13 +62,14 @@ Saves are always at `root_dir/saves/` (symlinked per-version when `saves_isolati
 
 ### Tauri Commands
 
-Key commands exposed to frontend (defined in `lib.rs`):
+Key commands exposed to frontend (thin wrappers in `src-tauri/src/lib.rs`, implemented in `core/`):
 - `download`, `launch`, `kill_game` - Game lifecycle
 - `scan_java`, `scan_java_dir` - Java runtime detection
 - `get_versions`, `get_profiles`, `get_config` - Data loading
-- `create_profile`, `delete_profile`, `login_microsoft` - Profile management
+- `create_profile`, `delete_profile`, `login_microsoft_with_code` - Profile management (`login_microsoft` always errors: webview cannot capture the OAuth callback; use the browser + manual code paste flow)
 - `create_saves_backup`, `restore_saves_backup`, `list_saves_backups` - Save management
 - `set_config`, `reset_all_config` - Configuration
+- `list_mods`, `toggle_mod`, `install_ghastloader` - GhastLoader mod management
 
 ### Event Emitters
 

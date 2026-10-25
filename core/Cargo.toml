@@ -1,0 +1,21 @@
+[package]
+name = "obsidian-launcher-core"
+version = "0.1.0"
+description = "Obsidian Launcher 框架无关的业务核心"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+sha1 = "0.11"
+hex = "0.4"
+zip = "2"
+indicatif = "0.18"
+futures = "0.3"
+dirs = "6"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+md-5 = "0.11"
+url = "2.4"
