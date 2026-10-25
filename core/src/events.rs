@@ -5,8 +5,7 @@ use crate::download::DownloadProgress;
 
 /// 核心层向外上报的事件。
 ///
-/// Tauri 壳将其桥接为同名前端事件（`download-progress` / `auth-progress` / `game-state`）；
-/// iced/Slint 壳用 Subscription / 定时轮询消费同一 channel。
+/// GUI 层（iced）通过事件总线以 Subscription 消费：下载进度、认证步骤、游戏进程状态。
 #[derive(Debug, Clone)]
 pub enum CoreEvent {
     DownloadProgress(DownloadProgress),

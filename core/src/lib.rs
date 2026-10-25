@@ -1,7 +1,7 @@
 //! Obsidian Launcher 业务核心（框架无关）。
 //!
 //! 不依赖任何 GUI 框架：长任务通过 `tokio::sync::mpsc` channel 上报
-//! [`CoreEvent`]，由外层壳（Tauri / iced）自行消费展示。
+//! [`CoreEvent`]，由 GUI 层（iced）自行消费展示。
 
 pub mod auth;
 pub mod backup;

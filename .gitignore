@@ -1,21 +1,8 @@
-# Dependencies
-node_modules/
-
-# Build outputs
-dist/
-dist-ssr/
-*.local
-
-# Rust workspace
+# Rust
 /target/
-src-tauri/target/
-src-tauri/release/
-src-tauri/debug/
 
 # Logs
 *.log
-npm-debug.log*
-pnpm-debug.log*
 
 # Editor
 .vscode/*
