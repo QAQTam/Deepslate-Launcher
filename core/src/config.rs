@@ -40,6 +40,9 @@ pub struct AppConfig {
     pub download_concurrency: usize,
     pub first_launch: bool,
     pub ui_mode: String,
+    /// 启动游戏时弹出独立日志窗口（子进程渲染游戏 stdout/stderr）
+    #[serde(default)]
+    pub log_window: bool,
 }
 
 impl Default for AppConfig {
@@ -56,6 +59,7 @@ impl Default for AppConfig {
             download_concurrency: 32,
             first_launch: true,
             ui_mode: "dark".to_string(),
+            log_window: false,
         }
     }
 }

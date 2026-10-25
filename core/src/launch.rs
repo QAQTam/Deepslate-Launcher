@@ -680,14 +680,42 @@ pub async fn launch(
     println!("主类: {}", full_version_json.main_class);
     println!("游戏参数: {}\n", game_args.join(" "));
 
-    let child = tokio::process::Command::new(&java_path)
+    let mut child = tokio::process::Command::new(&java_path)
         .args(&jvm_args)
         .arg("-cp")
         .arg(&classpath_str)
         .arg(&full_version_json.main_class)
         .args(&game_args)
         .current_dir(&opt.instance_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()?;
+
+    // 逐行转发游戏输出（stdout/stderr），GUI 侧可选择展示
+    if let Some(stdout) = child.stdout.take() {
+        let events = events.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ = events
+                    .send(CoreEvent::GameLog { is_stderr: false, line })
+                    .await;
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let events = events.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ = events
+                    .send(CoreEvent::GameLog { is_stderr: true, line })
+                    .await;
+            }
+        });
+    }
 
     // 保存进程 ID 和 Handle
     let pid = child.id().ok_or("无法获取进程 ID")?;

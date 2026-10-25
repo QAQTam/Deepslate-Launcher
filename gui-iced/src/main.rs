@@ -22,6 +22,8 @@ use deepslate_core as launcher;
 
 mod style;
 
+mod log_window;
+
 // ── 事件总线：core (mpsc 单消费者) → iced 订阅 (broadcast 可重订阅) ────────
 
 static EVENT_BUS: LazyLock<broadcast::Sender<CoreEvent>> =
@@ -116,6 +118,8 @@ struct App {
     pending_delete: Option<String>,
     // 设置页危险区二次确认
     confirm_reset: bool,
+    // 独立日志窗口子进程的写入端（None = 未启用或窗口已关闭）
+    log_writer: Option<mpsc::Sender<String>>,
 }
 
 impl App {
@@ -152,6 +156,7 @@ impl App {
             pending_restore: None,
             pending_delete: None,
             confirm_reset: false,
+            log_writer: None,
         };
 
         let load = Task::batch([
@@ -194,6 +199,8 @@ enum Message {
     Tick(Instant),
     /// 亮/暗主题切换
     ToggleDarkMode(bool),
+    /// 启动游戏时打开独立日志窗口
+    ToggleLogWindow(bool),
     VersionsLoaded(Result<Vec<launcher::download::VersionInfo>, String>),
     ProfilesLoaded(Result<ProfileStore, String>),
     JavaLoaded(Vec<launcher::launch::JavaInfo>),
@@ -270,6 +277,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::ToggleDarkMode(dark) => {
             app.dark_mode = dark;
             app.config.ui_mode = if dark { "dark".to_string() } else { "light".to_string() };
+            let config = app.config.clone();
+            Task::perform(async move { launcher::config::save(&config) }, Message::SettingsSaved)
+        }
+        Message::ToggleLogWindow(on) => {
+            app.config.log_window = on;
             let config = app.config.clone();
             Task::perform(async move { launcher::config::save(&config) }, Message::SettingsSaved)
         }
@@ -407,6 +419,15 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
 
             let saves_isolation = app.config.saves_isolation;
             let events = core_event_sender();
+
+            // 启用日志模式时拉起独立日志窗口（复用已打开的窗口）
+            if app.config.log_window && app.log_writer.is_none() {
+                app.log_writer = spawn_log_window(app.dark_mode);
+                if app.log_writer.is_some() {
+                    app.status = format!("正在启动 {} ...（日志窗口已打开）", version.id);
+                }
+            }
+
             let opts = launcher::launch::LaunchOptions {
                 version: version.id.clone(),
                 game_dir: launcher::config::resolve_game_dir(&app.config),
@@ -691,8 +712,69 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 }
                 Task::none()
             }
+            CoreEvent::GameLog { is_stderr, line } => {
+                // 转发给独立日志窗口子进程；窗口已关闭则丢弃
+                if let Some(tx) = &app.log_writer {
+                    let payload = format!("{}\t{}", if is_stderr { "E" } else { "O" }, line);
+                    if matches!(
+                        tx.try_send(payload),
+                        Err(mpsc::error::TrySendError::Closed(_))
+                    ) {
+                        app.log_writer = None;
+                    }
+                }
+                Task::none()
+            }
         },
     }
+}
+
+/// 拉起独立日志窗口子进程（deepslate-iced --log-window），返回向其 stdin 写行的 sender
+fn spawn_log_window(dark: bool) -> Option<mpsc::Sender<String>> {
+    let exe = std::env::current_exe().ok()?;
+    let (tx, mut rx) = mpsc::channel::<String>(1024);
+    std::thread::Builder::new()
+        .name("log-window".into())
+        .spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async move {
+                let mut child = match tokio::process::Command::new(&exe)
+                    .arg("--log-window")
+                    .arg(if dark { "--dark" } else { "--light" })
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(child) => child,
+                    Err(_) => {
+                        // 窗口起不来：排空通道，避免主线程 try_send 阻塞语义混淆
+                        while rx.recv().await.is_some() {}
+                        return;
+                    }
+                };
+                let Some(mut stdin) = child.stdin.take() else {
+                    return;
+                };
+                use tokio::io::AsyncWriteExt;
+                while let Some(line) = rx.recv().await {
+                    let ok = stdin.write_all(line.as_bytes()).await.is_ok()
+                        && stdin.write_all(b"\n").await.is_ok();
+                    if !ok {
+                        break;
+                    }
+                }
+                drop(stdin);
+                let _ = child.wait().await;
+            });
+        })
+        .ok()?;
+    Some(tx)
 }
 
 /// 拉取指定版本的备份列表
@@ -1298,7 +1380,13 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
                 .on_toggle(Message::ToggleDarkMode)
                 .size(13)
                 .style(style::checkbox_style),
+            checkbox(app.config.log_window)
+                .label("启动游戏时打开独立日志窗口（stdout/stderr，超出 2000 行自动压缩）")
+                .on_toggle(Message::ToggleLogWindow)
+                .size(13)
+                .style(style::checkbox_style),
         ]
+        .spacing(10)
         .into(),
     );
     let root_card = section_card(
@@ -1371,6 +1459,13 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
 // ── 入口 ─────────────────────────────────────────────────
 
 fn main() -> iced::Result {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--log-window") {
+        // 独立日志窗口子进程模式：主进程经 stdin 逐行喂日志
+        let dark = !args.iter().any(|a| a == "--light");
+        return log_window::run(dark);
+    }
+
     iced::application(App::boot, update, view)
         .title(|_app: &App| "深板岩启动器".to_string())
         .theme(|app: &App| if app.dark_mode { style::theme_dark() } else { style::theme_light() })
