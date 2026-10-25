@@ -1515,3 +1515,195 @@ fn main() -> iced::Result {
         .window_size(Size::new(1040.0, 700.0))
         .run()
 }
+
+// ── 性能诊断测试：页面切换卡顿根因分析 ────────────────────
+//
+// 运行：cargo test -p gui-iced switch_perf -- --nocapture
+// 输出各项每帧耗时（µs），定位卡顿出在 update / view 重建 / 数据规模哪一环。
+
+#[cfg(test)]
+mod switch_perf {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::Duration;
+
+    fn make_app(n_versions: usize) -> App {
+        let versions: Vec<launcher::download::VersionInfo> = (0..n_versions)
+            .map(|i| launcher::download::VersionInfo {
+                id: format!("1.20.{}", i),
+                kind: if i % 5 == 0 { "snapshot" } else { "release" }.to_string(),
+                url: format!("https://example.com/v{}.json", i),
+                release_time: "2026-01-01T00:00:00Z".to_string(),
+            })
+            .collect();
+        let selected = versions.first().cloned();
+        let profiles: Vec<UserProfile> = (0..3)
+            .map(|i| UserProfile {
+                name: format!("player{}", i),
+                uuid: format!("00000000-0000-0000-0000-{:012}", i),
+                auth_method: launcher::AuthMethod::Offline,
+                access_token: None,
+                refresh_token: None,
+                expires_at: None,
+            })
+            .collect();
+        let java_list: Vec<launcher::launch::JavaInfo> = (0..3)
+            .map(|i| launcher::launch::JavaInfo {
+                path: format!("/usr/lib/jvm/jdk-2{}/", i),
+                version: format!("21.0.{}", i),
+            })
+            .collect();
+
+        App {
+            page: Page::Launch,
+            status: String::new(),
+            dark_mode: true,
+            page_anim: Animation::new(true),
+            now: Instant::now(),
+            config: AppConfig::default(),
+            versions,
+            version_tab: VersionTab::Release,
+            selected_version: selected,
+            profiles,
+            selected_profile: None,
+            new_profile_name: String::new(),
+            selected_java: java_list.first().cloned(),
+            java_list,
+            downloading: false,
+            progress: None,
+            launching: false,
+            game_running: false,
+            ms_code_input: String::new(),
+            ms_logging_in: false,
+            backups: (0..6).map(|i| format!("2026-10-2{}_12-00-00", i)).collect(),
+            pending_restore: None,
+            pending_delete: None,
+            confirm_reset: false,
+            log_writer: None,
+        }
+    }
+
+    /// 连续 frames 帧：推进 16ms 时钟 + update(Tick) + view() 重建，返回 (平均, 最大)
+    fn run_frames(app: &mut App, page: Page, frames: usize, animated: bool) -> (f64, f64) {
+        update(app, Message::Navigate(page));
+        if !animated {
+            // 快进到动画结束后
+            app.now += Duration::from_secs(2);
+            update(app, Message::Tick(app.now));
+        }
+        let mut total_us = 0.0f64;
+        let mut max_us = 0.0f64;
+        for _ in 0..frames {
+            let now = app.now + Duration::from_millis(16);
+            let t0 = Instant::now();
+            update(app, Message::Tick(now));
+            black_box(view(app));
+            let us = t0.elapsed().as_secs_f64() * 1e6;
+            total_us += us;
+            max_us = max_us.max(us);
+        }
+        (total_us / frames as f64, max_us)
+    }
+
+    fn avg<F: FnMut()>(mut f: F, iters: usize) -> f64 {
+        // 预热
+        for _ in 0..3 {
+            f();
+        }
+        let t0 = Instant::now();
+        for _ in 0..iters {
+            f();
+        }
+        t0.elapsed().as_secs_f64() * 1e6 / iters as f64
+    }
+
+    #[test]
+    fn page_switch_profile() {
+        let mut big = make_app(800);
+        let mut small = make_app(10);
+
+        // 1. Navigate 本身的成本（重置动画 + 分支处理）
+        let nav_big = avg(
+            || {
+                black_box(update(&mut big, Message::Navigate(Page::Home)));
+            },
+            200,
+        );
+        let nav_small = avg(
+            || {
+                black_box(update(&mut small, Message::Navigate(Page::Home)));
+            },
+            200,
+        );
+
+        // 2. 动画进行中（enter/float 包装生效）每帧 update+view 成本
+        let (anim_launch_big, anim_launch_big_max) = run_frames(&mut big, Page::Launch, 30, true);
+        let (anim_launch_small, _) = run_frames(&mut small, Page::Launch, 30, true);
+        let (anim_settings_big, _) = run_frames(&mut big, Page::Settings, 30, true);
+        let (anim_home_big, _) = run_frames(&mut big, Page::Home, 30, true);
+
+        // 3. 动画结束后（无 enter 包装）每帧成本 —— 对照组
+        let (idle_launch_big, _) = run_frames(&mut big, Page::Launch, 30, false);
+        let (idle_settings_big, _) = run_frames(&mut big, Page::Settings, 30, false);
+
+        // 4. 数据量嫌疑：filtered_versions 单独成本
+        let fv_big = avg(
+            || {
+                black_box(big.filtered_versions());
+            },
+            500,
+        );
+
+        // 5. subscription 求值成本（每条消息后都会调用）
+        let sub_cost = avg(
+            || {
+                black_box(subscription(&big));
+            },
+            2000,
+        );
+
+        println!("┌─ 页面切换性能剖析（debug 构建, µs/次）────────────────");
+        println!("│ Navigate update (800 版本)          {:>10.1}", nav_big);
+        println!("│ Navigate update (10 版本)           {:>10.1}", nav_small);
+        println!("│ 动画中每帧 update+view·启动页(800)  {:>10.1}（最差 {:.1}）", anim_launch_big, anim_launch_big_max);
+        println!("│ 动画中每帧 update+view·启动页(10)   {:>10.1}", anim_launch_small);
+        println!("│ 动画中每帧 update+view·设置页(800)  {:>10.1}", anim_settings_big);
+        println!("│ 动画中每帧 update+view·首页(800)    {:>10.1}", anim_home_big);
+        println!("│ 空闲每帧 update+view·启动页(800)    {:>10.1}", idle_launch_big);
+        println!("│ 空闲每帧 update+view·设置页(800)    {:>10.1}", idle_settings_big);
+        println!("│ filtered_versions() 单独 (800)      {:>10.1}", fv_big);
+        println!("│ subscription() 求值                 {:>10.1}", sub_cost);
+        println!("└──────────────────────────────────────────────────────");
+
+        // 60fps 预算为 16667µs/帧；构造阶段超预算即解释卡顿
+        assert!(
+            anim_launch_big < 16_000.0,
+            "动画中启动页每帧构造耗时 {:.0}µs，超出 60fps 预算",
+            anim_launch_big
+        );
+    }
+
+    /// 守护：页面入场动画的 16ms 滴答订阅必须自动终止，
+    /// 否则会变成常驻 60fps 重绘（表现为整体持续卡顿）
+    #[test]
+    fn animation_tick_subscription_terminates() {
+        let mut app = make_app(10);
+        update(&mut app, Message::Navigate(Page::Home));
+
+        // 动画 450ms；滴答走 1s（62 帧）后订阅里应不再包含 time 滴答
+        let mut ticks = 0;
+        for _ in 0..62 {
+            app.now += Duration::from_millis(16);
+            let now = app.now;
+            update(&mut app, Message::Tick(now));
+            if app.page_anim.is_animating(now) {
+                ticks += 1;
+            }
+        }
+        assert!(
+            !app.page_anim.is_animating(app.now),
+            "动画应在 450ms 后结束，但 1s 后仍在进行"
+        );
+        assert!(ticks <= 30, "动画滴答帧数异常: {}", ticks);
+    }
+}
