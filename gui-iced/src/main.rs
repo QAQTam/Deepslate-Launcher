@@ -7,7 +7,7 @@
 use std::sync::LazyLock;
 
 use iced::{
-    Color, Element, Length, Size, Subscription, Task, Theme,
+    Element, Length, Size, Subscription, Task,
     futures::{SinkExt, Stream},
     widget::{Space, button, checkbox, column, container, pick_list, progress_bar, row, rule, scrollable, text, text_input},
 };
@@ -17,6 +17,10 @@ use launcher::events::{CoreEvent, GameState};
 use launcher::{AppConfig, ProfileStore, UserProfile};
 
 use obsidian_launcher_core as launcher;
+
+mod style;
+
+use style::{ACCENT, SUCCESS, TEXT_FAINT, TEXT_MUTED, TEXT_PRIMARY};
 
 // ── 事件总线：core (mpsc 单消费者) → iced 订阅 (broadcast 可重订阅) ────────
 
@@ -707,90 +711,69 @@ fn listen_core_events() -> impl Stream<Item = Message> {
 
 // ── 视图 ─────────────────────────────────────────────────
 
-const BG_DEEP: Color = Color::from_rgb8(0x0f, 0x0d, 0x1a);
-const BG_SIDEBAR: Color = Color::from_rgb8(0x17, 0x14, 0x28);
-const BG_CARD: Color = Color::from_rgb8(0x1c, 0x18, 0x34);
-const ACCENT: Color = Color::from_rgb8(0x8b, 0x5c, 0xf6);
-const TEXT_PRIMARY: Color = Color::from_rgb8(0xf5, 0xf3, 0xff);
-const TEXT_MUTED: Color = Color::from_rgb8(0x9d, 0x93, 0xc8);
-
-fn app_theme() -> Theme {
-    Theme::custom(
-        "Void Crystal",
-        iced::theme::Palette {
-            background: BG_DEEP,
-            text: TEXT_PRIMARY,
-            primary: ACCENT,
-            success: Color::from_rgb8(0x34, 0xd3, 0x99),
-            warning: Color::from_rgb8(0xfb, 0xbf, 0x24),
-            danger: Color::from_rgb8(0xef, 0x44, 0x44),
-        },
-    )
-}
-
-fn card_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(BG_CARD.into()),
-        border: iced::Border {
-            color: Color::from_rgba8(0x8b, 0x5c, 0xf6, 0.25),
-            width: 1.0,
-            radius: 10.0.into(),
-        },
-        ..Default::default()
-    }
-}
-
-fn sidebar_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(BG_SIDEBAR.into()),
-        ..Default::default()
-    }
-}
-
 fn view(app: &App) -> Element<'_, Message> {
     let nav = |page: Page| {
         let active = app.page == page;
-        let label = if active {
-            format!("● {}", page.label())
-        } else {
-            format!("  {}", page.label())
-        };
-        let t = text(label).size(15).color(if active {
-            TEXT_PRIMARY
-        } else {
-            TEXT_MUTED
-        });
-        button(t).on_press(Message::Navigate(page)).padding(6.0)
+        button(text(page.label()).size(14))
+            .width(Length::Fill)
+            .padding(7.0)
+            .style(style::nav(active))
+            .on_press(Message::Navigate(page))
     };
+
+    let busy = app.game_running || app.launching;
+    let status_dot = if busy { SUCCESS } else { TEXT_FAINT };
 
     let sidebar = container(
         column![
-            text("Obsidian").size(20).color(ACCENT),
-            text("Launcher").size(12).color(TEXT_MUTED),
-            Space::new().height(Length::from(16)),
+            row![
+                text("◆").size(18).color(ACCENT),
+                column![
+                    text("Obsidian").size(17).color(TEXT_PRIMARY),
+                    text("LAUNCHER").size(9).color(TEXT_FAINT),
+                ],
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+            Space::new().height(Length::from(20)),
             nav(Page::Home),
             nav(Page::Launch),
             nav(Page::Settings),
             Space::new().height(Length::Fill),
-            text(game_state_label(app)).size(12).color(TEXT_MUTED),
+            row![
+                text("●").size(10).color(status_dot),
+                text(game_state_label(app)).size(11).color(TEXT_MUTED),
+            ]
+            .spacing(6),
         ]
         .spacing(4)
-        .padding(12),
+        .padding(14),
     )
-    .width(Length::from(150))
+    .width(Length::from(168))
     .height(Length::Fill)
-    .style(sidebar_style);
+    .style(style::sidebar);
 
-    let content = scrollable(container(page_view(app)).padding(20));
+    let content = scrollable(container(page_view(app)).padding(24));
 
     container(row![sidebar, content])
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(|_t| container::Style {
-            background: Some(BG_DEEP.into()),
-            ..Default::default()
-        })
+        .style(style::page)
         .into()
+}
+
+/// 带标题的玻璃卡片区块
+fn section_card<'a>(title: &str, body: Element<'a, Message>) -> Element<'a, Message> {
+    container(
+        column![
+            text(title.to_string()).size(15).color(TEXT_PRIMARY),
+            body,
+        ]
+        .spacing(10),
+    )
+    .padding(16)
+    .style(style::card)
+    .into()
 }
 
 fn game_state_label(app: &App) -> &'static str {
@@ -814,33 +797,35 @@ fn page_view(app: &App) -> Element<'_, Message> {
 /// Microsoft 登录：系统浏览器授权 + 粘贴回调 URL（webview 无法自动捕获 code）
 fn ms_login_section(app: &App) -> Element<'_, Message> {
     let login_btn = {
-        let b = button(text("完成登录").color(Color::WHITE)).padding(6.0);
+        let b = button(text("完成登录").size(13)).padding(6.0);
         if app.ms_logging_in || app.ms_code_input.trim().is_empty() {
             b
         } else {
-            b.style(button::primary).on_press(Message::MsLoginPressed)
+            b.style(style::primary).on_press(Message::MsLoginPressed)
         }
     };
 
     column![
         row![
-            button(text("打开微软登录页").size(13))
+            button(text("打开微软登录页").size(12))
                 .padding(6.0)
+                .style(style::secondary)
                 .on_press(Message::MsAuthPressed),
             text("浏览器完成授权后，把跳转到的 URL 粘贴到下面")
                 .size(11)
-                .color(TEXT_MUTED),
+                .color(TEXT_FAINT),
         ]
         .spacing(8),
         row![
             text_input("粘贴回调 URL（含 code=...）", &app.ms_code_input)
                 .on_input(Message::MsCodeChanged)
-                .on_submit(Message::MsLoginPressed),
+                .on_submit(Message::MsLoginPressed)
+                .style(style::text_field),
             login_btn,
         ]
         .spacing(8),
     ]
-    .spacing(6)
+    .spacing(8)
     .into()
 }
 
@@ -850,71 +835,68 @@ fn launch_page(app: &App) -> Element<'_, Message> {
             .iter()
             .map(|tab| {
                 let active = app.version_tab == *tab;
-                let t = text(tab.label()).size(13).color(if active {
-                    TEXT_PRIMARY
-                } else {
-                    TEXT_MUTED
-                });
-                let b = button(t).on_press(Message::TabChanged(*tab));
-                if active {
-                    b.style(button::primary)
-                } else {
-                    b
-                }
-                .into()
+                button(text(tab.label()).size(13))
+                    .padding(7.0)
+                    .style(style::nav(active))
+                    .on_press(Message::TabChanged(*tab))
+                    .into()
             })
             .collect::<Vec<_>>(),
     )
-    .spacing(8);
+    .spacing(6);
 
     let version_picker = pick_list(
         app.filtered_versions(),
         app.selected_version.as_ref(),
         Message::VersionSelected,
     )
-    .placeholder("选择版本");
+    .placeholder("选择版本")
+    .style(style::pick);
 
     let profile_picker = pick_list(
         app.profiles.clone(),
         app.selected_profile.as_ref(),
         Message::ProfileSelected,
     )
-    .placeholder("选择档案");
+    .placeholder("选择档案")
+    .style(style::pick);
 
     let new_profile_input = text_input("新建离线档案...", &app.new_profile_name)
         .on_input(Message::NewProfileNameChanged)
-        .on_submit(Message::CreateProfile);
+        .on_submit(Message::CreateProfile)
+        .style(style::text_field);
 
     let java_picker = pick_list(
         app.java_list.clone(),
         app.selected_java.as_ref(),
         Message::JavaSelected,
     )
-    .placeholder("选择 Java");
+    .placeholder("选择 Java")
+    .style(style::pick);
 
     // 下载按钮
     let download_btn = {
-        let b = button(text("下载版本").color(Color::WHITE)).padding(8.0);
+        let b = button(text("下载版本")).padding(8.0);
         if app.downloading || app.launching || app.selected_version.is_none() {
             b
         } else {
-            b.style(button::primary).on_press(Message::DownloadPressed)
+            b.style(style::primary).on_press(Message::DownloadPressed)
         }
     };
 
     // 启动/终止按钮
     let launch_btn = if app.game_running || app.launching {
-        button(text("终止游戏").color(Color::WHITE))
+        button(text("终止游戏"))
             .padding(8.0)
-            .style(button::danger)
+            .style(style::danger)
             .on_press(Message::KillPressed)
     } else {
         let ready = app.selected_version.is_some()
             && app.selected_profile.is_some()
             && app.selected_java.is_some();
-        let b = button(text("启动游戏").color(Color::WHITE)).padding(8.0);
+        let b = button(text("启动游戏")).padding(8.0);
         if ready {
-            b.style(button::primary).on_press(Message::LaunchPressed)
+            b.style(style::primary).on_press(Message::LaunchPressed)
         } else {
             b
         }
@@ -922,70 +904,92 @@ fn launch_page(app: &App) -> Element<'_, Message> {
 
     let progress_section: Element<Message> = match (&app.progress, app.downloading) {
         (Some(p), _) => column![
-            progress_bar(0.0..=100.0, p.percent as f32),
+            progress_bar(0.0..=100.0, p.percent as f32).style(style::progress),
             text(format!("{}/{}（{}%）— {}", p.current, p.total, p.percent, p.current_file))
                 .size(12)
                 .color(TEXT_MUTED),
         ]
-        .spacing(6)
+        .spacing(8)
         .into(),
         (None, true) => text("准备下载...").size(12).color(TEXT_MUTED).into(),
         (None, false) => Space::new().height(Length::from(1)).into(),
     };
 
     let selected_summary = row![
-        text("档案:").size(13).color(TEXT_MUTED),
+        text("档案:").size(12).color(TEXT_MUTED),
         text(
             app.selected_profile
                 .as_ref()
                 .map(|p| p.name.as_str())
                 .unwrap_or("未选择")
         )
-        .size(13),
-        text("版本:").size(13).color(TEXT_MUTED),
+        .size(12)
+        .color(TEXT_PRIMARY),
+        text("版本:").size(12).color(TEXT_MUTED),
         text(
             app.selected_version
                 .as_ref()
                 .map(|v| v.id.as_str())
                 .unwrap_or("未选择")
         )
-        .size(13),
+        .size(12)
+        .color(TEXT_PRIMARY),
     ]
     .spacing(8);
 
-    column![
-        text("启动").size(26).color(TEXT_PRIMARY),
-        text(format!("游戏目录: {}", launcher::config::resolve_game_dir(&app.config).display()))
-            .size(12)
-            .color(TEXT_MUTED),
+    let version_card = section_card(
+        "版本",
+        column![tab_row, version_picker].spacing(10).into(),
+    );
+    let profile_card = section_card(
+        "档案",
         column![
-            text("版本").size(15).color(TEXT_PRIMARY),
-            tab_row,
-            version_picker,
-        ]
-        .spacing(8),
-        rule::horizontal(2.0),
-        column![
-            text("档案").size(15).color(TEXT_PRIMARY),
             row![profile_picker, new_profile_input].spacing(8),
             ms_login_section(app),
         ]
-        .spacing(8),
-        rule::horizontal(2.0),
-        column![
-            text("Java 运行时").size(15).color(TEXT_PRIMARY),
-            row![java_picker, button(text("重新扫描").size(13)).on_press(Message::RescanJava)]
-                .spacing(8),
+        .spacing(10)
+        .into(),
+    );
+    let java_card = section_card(
+        "Java 运行时",
+        row![
+            java_picker,
+            button(text("重新扫描").size(13))
+                .padding(6.0)
+                .style(style::secondary)
+                .on_press(Message::RescanJava),
         ]
-        .spacing(8),
-        rule::horizontal(2.0),
-        row![download_btn, launch_btn].spacing(12),
-        progress_section,
-        selected_summary,
-        text(app.status.as_str()).size(12).color(TEXT_MUTED),
+        .spacing(8)
+        .into(),
+    );
+    let actions_card = section_card(
+        "启动",
+        column![
+            row![download_btn, launch_btn].spacing(12),
+            progress_section,
+            selected_summary,
+            text(app.status.as_str()).size(12).color(TEXT_MUTED),
+        ]
+        .spacing(12)
+        .into(),
+    );
+
+    column![
+        text("启动").size(28).color(TEXT_PRIMARY),
+        text(format!(
+            "游戏目录: {}",
+            launcher::config::resolve_game_dir(&app.config).display()
+        ))
+        .size(11)
+        .color(TEXT_FAINT),
+        rule::horizontal(1.0).style(style::rule_style),
+        version_card,
+        profile_card,
+        java_card,
+        actions_card,
     ]
-    .spacing(14)
-    .max_width(640)
+    .spacing(16)
+    .max_width(660)
     .into()
 }
 
@@ -1000,7 +1004,8 @@ fn info_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
     .into()
 }
 
-fn home_page(app: &App) -> Element<'_, Message> {    let info = info_row;
+fn home_page(app: &App) -> Element<'_, Message> {
+    let info = info_row;
 
     let profile_line = info(
         "档案:",
@@ -1032,56 +1037,56 @@ fn home_page(app: &App) -> Element<'_, Message> {    let info = info_row;
     let state_line = info("游戏:", game_state_label(app).to_string());
     let root_line = info("根目录:", app.config.root_dir.clone());
 
-    let status_card = container(
+    let status_card = section_card(
+        "当前状态",
         column![
-            text("当前状态").size(16).color(TEXT_PRIMARY),
             profile_line,
             version_line,
             java_line,
             state_line,
             root_line,
         ]
-        .spacing(6),
-    )
-    .padding(16)
-    .style(card_style);
+        .spacing(6)
+        .into(),
+    );
 
     let launch_btn = if app.game_running || app.launching {
-        button(text("终止游戏").color(Color::WHITE))
+        button(text("终止游戏"))
             .padding(8.0)
-            .style(button::danger)
+            .style(style::danger)
             .on_press(Message::KillPressed)
     } else {
-        let b = button(text("启动游戏").color(Color::WHITE)).padding(8.0);
+        let b = button(text("启动游戏")).padding(8.0);
         let ready = app.selected_version.is_some() && app.selected_profile.is_some()
             && app.selected_java.is_some();
         if ready {
-            b.style(button::primary).on_press(Message::LaunchPressed)
+            b.style(style::primary).on_press(Message::LaunchPressed)
         } else {
             b
         }
     };
 
     let download_btn = {
-        let b = button(text("下载当前版本").color(Color::WHITE)).padding(8.0);
+        let b = button(text("下载当前版本")).padding(8.0);
         if app.downloading || app.selected_version.is_none() {
             b
         } else {
-            b.style(button::primary).on_press(Message::DownloadPressed)
+            b.style(style::primary).on_press(Message::DownloadPressed)
         }
     };
 
     column![
-        text("首页").size(26).color(TEXT_PRIMARY),
+        text("首页").size(28).color(TEXT_PRIMARY),
+        rule::horizontal(1.0).style(style::rule_style),
         status_card,
         row![launch_btn, download_btn,].spacing(12),
         text("提示：版本 / 档案 / Java 在「启动」页选择；目录与隔离选项在「设置」页。")
             .size(12)
-            .color(TEXT_MUTED),
+            .color(TEXT_FAINT),
         text(app.status.as_str()).size(12).color(TEXT_MUTED),
     ]
-    .spacing(14)
-    .max_width(640)
+    .spacing(16)
+    .max_width(660)
     .into()
 }
 
@@ -1104,11 +1109,11 @@ fn settings_page(app: &App) -> Element<'_, Message> {
         Some(version) => {
             let game_busy = app.game_running || app.launching;
             let create_btn = {
-                let b = button(text("创建备份").color(Color::WHITE)).padding(8.0);
+                let b = button(text("创建备份")).padding(8.0);
                 if game_busy {
                     b
                 } else {
-                    b.style(button::primary).on_press(Message::BackupCreatePressed)
+                    b.style(style::primary).on_press(Message::BackupCreatePressed)
                 }
             };
 
@@ -1129,8 +1134,12 @@ fn settings_page(app: &App) -> Element<'_, Message> {
                                 "恢复"
                             })
                             .size(12))
-                            .padding(4.0);
-                            let b = if restoring { b.style(button::danger) } else { b };
+                            .padding(5.0);
+                            let b = if restoring {
+                                b.style(style::danger)
+                            } else {
+                                b.style(style::secondary)
+                            };
                             if game_busy {
                                 b
                             } else {
@@ -1139,9 +1148,13 @@ fn settings_page(app: &App) -> Element<'_, Message> {
                         };
                         let delete_btn = {
                             let b = button(text(if deleting { "确认删除？" } else { "删除" }).size(12))
-                                .padding(4.0);
-                            let b = if deleting { b.style(button::danger) } else { b };
-                            b.on_press(Message::BackupDeletePressed(name.clone()))
+                                .padding(5.0);
+                            if deleting {
+                                b.style(style::danger)
+                            } else {
+                                b.style(style::secondary)
+                            }
+                            .on_press(Message::BackupDeletePressed(name.clone()))
                         };
                         row![
                             text(name.clone()).size(12),
@@ -1186,68 +1199,84 @@ fn settings_page(app: &App) -> Element<'_, Message> {
             .find(|&&c| c == app.config.download_concurrency),
         Message::ConcurrencySelected,
     )
-    .placeholder("并发数");
+    .placeholder("并发数")
+    .style(style::pick);
 
     let reset_btn = if app.confirm_reset {
-        button(text("确认重置？（再点一次执行）").color(Color::WHITE))
+        button(text("确认重置？（再点一次执行）"))
             .padding(8.0)
-            .style(button::danger)
+            .style(style::danger)
             .on_press(Message::ResetAllPressed)
     } else {
-        button(text("重置所有配置").color(Color::WHITE))
+        button(text("重置所有配置"))
             .padding(8.0)
-            .style(button::danger)
+            .style(style::danger)
             .on_press(Message::ResetAllPressed)
     };
 
-    column![
-        text("设置").size(26).color(TEXT_PRIMARY),
-        column![
-            text("根目录").size(15).color(TEXT_PRIMARY),
-            text_input("如 /home/xxx/Games/ObsidianLauncher", &app.config.root_dir)
-                .on_input(Message::RootDirChanged),
-        ]
-        .spacing(8),
+    let root_card = section_card(
+        "根目录",
+        text_input("如 /home/xxx/Games/ObsidianLauncher", &app.config.root_dir)
+            .on_input(Message::RootDirChanged)
+            .style(style::text_field)
+            .into(),
+    );
+    let isolation_card = section_card(
+        "目录隔离",
         column![
             checkbox(app.config.version_isolation)
-                .label("版本隔离（每个版本独立目录）")
-                .on_toggle(Message::ToggleVersionIsolation),
+                .label("版本隔离（每个版本独立实例目录）")
+                .on_toggle(Message::ToggleVersionIsolation)
+                .size(13)
+                .style(style::checkbox_style),
             checkbox(app.config.saves_isolation)
-                .label("存档隔离（实验级，每版本独立 saves 符号链接）")
-                .on_toggle(Message::ToggleSavesIsolation),
+                .label("存档隔离（每版本独立 saves，符号链接实现）")
+                .on_toggle(Message::ToggleSavesIsolation)
+                .size(13)
+                .style(style::checkbox_style),
         ]
-        .spacing(8),
+        .spacing(10)
+        .into(),
+    );
+    let concurrency_card = section_card(
+        "下载并发数",
+        concurrency_picker.into(),
+    );
+    let dirs_card = section_card(
+        "实际目录",
         column![
-            text("下载并发数").size(15).color(TEXT_PRIMARY),
-            concurrency_picker,
-        ]
-        .spacing(8),
-        rule::horizontal(2.0),
-        column![
-            text("实际目录").size(15).color(TEXT_PRIMARY),
             text(format!("配置文件: {}", config_path)).size(12).color(TEXT_MUTED),
             text(format!("游戏目录: {}", game_dir)).size(12).color(TEXT_MUTED),
             text(format!("存档目录: {}", saves_dir)).size(12).color(TEXT_MUTED),
             text(format!("版本目录: {}", versions_dir)).size(12).color(TEXT_MUTED),
         ]
-        .spacing(6),
-        rule::horizontal(2.0),
-        backup_section,
-        rule::horizontal(2.0),
+        .spacing(5)
+        .into(),
+    );
+    let backup_card = container(backup_section).padding(16).style(style::card);
+
+    column![
+        text("设置").size(28).color(TEXT_PRIMARY),
+        rule::horizontal(1.0).style(style::rule_style),
+        root_card,
+        isolation_card,
+        concurrency_card,
+        dirs_card,
+        backup_card,
         row![
-            button(text("保存设置").color(Color::WHITE))
+            button(text("保存设置"))
                 .padding(8.0)
-                .style(button::primary)
+                .style(style::primary)
                 .on_press(Message::SaveSettings),
             reset_btn,
         ]
         .spacing(12),
         text("保存时会同时记录当前选中的档案与 Java 路径。重置会删除 config.json 与 profiles.json（游戏文件不受影响）。")
             .size(12)
-            .color(TEXT_MUTED),
+            .color(TEXT_FAINT),
     ]
-    .spacing(14)
-    .max_width(640)
+    .spacing(16)
+    .max_width(680)
     .into()
 }
 
@@ -1256,8 +1285,12 @@ fn settings_page(app: &App) -> Element<'_, Message> {
 fn main() -> iced::Result {
     iced::application(App::boot, update, view)
         .title(|_app: &App| "Obsidian Launcher".to_string())
-        .theme(|_app: &App| app_theme())
+        .theme(|_app: &App| style::theme())
         .subscription(subscription)
-        .window_size(Size::new(1000.0, 680.0))
+        .window(iced::window::Settings {
+            min_size: Some(Size::new(900.0, 560.0)),
+            ..Default::default()
+        })
+        .window_size(Size::new(1040.0, 700.0))
         .run()
 }
