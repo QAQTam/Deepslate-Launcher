@@ -92,6 +92,9 @@ struct App {
     page: Page,
     config: AppConfig,
     versions: Vec<launcher::download::VersionInfo>,
+    /// 当前 tab 的版本缓存：只在版本列表加载 / tab 切换时重算（refilter），
+    /// 避免动画帧里每帧克隆整个列表
+    filtered: Vec<launcher::download::VersionInfo>,
     version_tab: VersionTab,
     selected_version: Option<launcher::download::VersionInfo>,
     profiles: Vec<UserProfile>,
@@ -128,7 +131,7 @@ impl App {
         let now = Instant::now();
         // 启动即播放入场动画
         let mut page_anim = Animation::new(false)
-            .duration(Duration::from_millis(500))
+            .duration(Duration::from_millis(400))
             .easing(iced::animation::Easing::EaseOutCubic);
         page_anim.go_mut(true, now);
         let app = Self {
@@ -139,6 +142,7 @@ impl App {
             now,
             config,
             versions: Vec::new(),
+            filtered: Vec::new(),
             version_tab: VersionTab::Release,
             selected_version: None,
             profiles: Vec::new(),
@@ -168,8 +172,11 @@ impl App {
         (app, load)
     }
 
-    fn filtered_versions(&self) -> Vec<launcher::download::VersionInfo> {
-        self.versions
+    /// 重算当前 tab 的版本缓存，并把选择默认到该分类最新一个（列表为空则保留原选择）。
+    /// 仅在版本列表加载 / tab 切换时调用。
+    fn refilter(&mut self) {
+        self.filtered = self
+            .versions
             .iter()
             .filter(|v| match self.version_tab {
                 VersionTab::Release => v.kind == "release",
@@ -177,16 +184,12 @@ impl App {
                 VersionTab::Old => v.kind == "old_alpha" || v.kind == "old_beta",
             })
             .cloned()
-            .collect()
-    }
-
-    /// 版本 tab 切换后，默认选该分类的最新一个
-    fn refresh_default_version(&mut self) {
+            .collect();
         self.selected_version = self
-            .filtered_versions()
-            .into_iter()
-            .next()
-            .or(self.selected_version.take());
+            .filtered
+            .first()
+            .cloned()
+            .or_else(|| self.selected_version.take());
     }
 }
 
@@ -257,7 +260,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             // 重播页面入场动画
             app.now = Instant::now();
             app.page_anim = Animation::new(false)
-                .duration(Duration::from_millis(450))
+                .duration(Duration::from_millis(300))
                 .easing(iced::animation::Easing::EaseOutCubic);
             app.page_anim.go_mut(true, app.now);
             let backup_task = if page == Page::Settings {
@@ -287,7 +290,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::VersionsLoaded(Ok(versions)) => {
             app.versions = versions;
-            app.refresh_default_version();
+            app.refilter();
             Task::none()
         }
         Message::VersionsLoaded(Err(e)) => {
@@ -325,7 +328,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::TabChanged(tab) => {
             app.version_tab = tab;
-            app.refresh_default_version();
+            app.refilter();
             Task::none()
         }
         Message::VersionSelected(v) => {
@@ -811,7 +814,7 @@ fn subscription(app: &App) -> Subscription<Message> {
     let mut subs = vec![Subscription::run(listen_core_events)];
     // 入场动画进行中：16ms 滴答驱动重绘，动画结束自动停
     if app.page_anim.is_animating(app.now) {
-        subs.push(iced::time::every(Duration::from_millis(16)).map(Message::Tick));
+        subs.push(iced::time::every(Duration::from_millis(33)).map(Message::Tick));
     }
     Subscription::batch(subs)
 }
@@ -1005,7 +1008,7 @@ fn launch_page(app: &App, t: f32) -> Element<'_, Message> {
     .spacing(6);
 
     let version_picker = pick_list(
-        app.filtered_versions(),
+        app.filtered.as_slice(),
         app.selected_version.as_ref(),
         Message::VersionSelected,
     )
@@ -1554,7 +1557,7 @@ mod switch_perf {
             })
             .collect();
 
-        App {
+        let mut app = App {
             page: Page::Launch,
             status: String::new(),
             dark_mode: true,
@@ -1562,6 +1565,7 @@ mod switch_perf {
             now: Instant::now(),
             config: AppConfig::default(),
             versions,
+            filtered: Vec::new(),
             version_tab: VersionTab::Release,
             selected_version: selected,
             profiles,
@@ -1580,7 +1584,9 @@ mod switch_perf {
             pending_delete: None,
             confirm_reset: false,
             log_writer: None,
-        }
+        };
+        app.refilter();
+        app
     }
 
     /// 连续 frames 帧：推进 16ms 时钟 + update(Tick) + view() 重建，返回 (平均, 最大)
@@ -1646,10 +1652,10 @@ mod switch_perf {
         let (idle_launch_big, _) = run_frames(&mut big, Page::Launch, 30, false);
         let (idle_settings_big, _) = run_frames(&mut big, Page::Settings, 30, false);
 
-        // 4. 数据量嫌疑：filtered_versions 单独成本
+        // 4. 过滤缓存重算成本（现在仅发生在版本加载/tab 切换，而非每帧）
         let fv_big = avg(
             || {
-                black_box(big.filtered_versions());
+                black_box(big.refilter());
             },
             500,
         );
@@ -1671,7 +1677,7 @@ mod switch_perf {
         println!("│ 动画中每帧 update+view·首页(800)    {:>10.1}", anim_home_big);
         println!("│ 空闲每帧 update+view·启动页(800)    {:>10.1}", idle_launch_big);
         println!("│ 空闲每帧 update+view·设置页(800)    {:>10.1}", idle_settings_big);
-        println!("│ filtered_versions() 单独 (800)      {:>10.1}", fv_big);
+        println!("│ refilter() 重算（仅 tab 切换时）(800){:>10.1}", fv_big);
         println!("│ subscription() 求值                 {:>10.1}", sub_cost);
         println!("└──────────────────────────────────────────────────────");
 
