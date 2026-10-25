@@ -1,16 +1,16 @@
 [package]
 name = "gui-iced"
 version = "0.1.0"
-description = "Obsidian Launcher 的 iced 桌面前端（消费 obsidian-launcher-core）"
+description = "deepslate-core 的 iced 桌面前端（消费 deepslate-core）"
 edition = "2021"
 license = "MIT"
 
 [[bin]]
-name = "obsidian-iced"
+name = "deepslate-iced"
 path = "src/main.rs"
 
 [dependencies]
-obsidian-launcher-core = { path = "../core" }
+deepslate-core = { path = "../core" }
 # wgpu 渲染失败时自动回退 tiny-skia；tokio feature 让 iced 的 async 跑在 tokio 上
 iced = { version = "0.14", features = ["tokio"] }
 tokio = { version = "1", features = ["sync", "rt-multi-thread"] }

@@ -589,7 +589,7 @@ pub async fn launch(
                         let s = s
                             .replace("${natives_directory}", &natives_dir_str)
                             .replace("${classpath}", &classpath_str)
-                            .replace("${launcher_name}", "Obsidian Launcher")
+                            .replace("${launcher_name}", "Deepslate Launcher")
                             .replace("${launcher_version}", "0.1.0");
                         jvm_args.push(s);
                     }
@@ -600,7 +600,7 @@ pub async fn launch(
                                     let s = s
                                         .replace("${natives_directory}", &natives_dir_str)
                                         .replace("${classpath}", &classpath_str)
-                                        .replace("${launcher_name}", "Obsidian Launcher")
+                                        .replace("${launcher_name}", "Deepslate Launcher")
                                         .replace("${launcher_version}", "0.1.0");
                                     jvm_args.push(s);
                                 }
@@ -610,7 +610,7 @@ pub async fn launch(
                                             let s = s
                                                 .replace("${natives_directory}", &natives_dir_str)
                                                 .replace("${classpath}", &classpath_str)
-                                                .replace("${launcher_name}", "Obsidian Launcher")
+                                                .replace("${launcher_name}", "Deepslate Launcher")
                                                 .replace("${launcher_version}", "0.1.0");
                                             jvm_args.push(s);
                                         }

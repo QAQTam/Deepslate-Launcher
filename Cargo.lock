@@ -800,6 +800,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
+name = "deepslate-core"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "futures",
+ "hex",
+ "indicatif",
+ "md-5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.11.0",
+ "tokio",
+ "url",
+ "uuid",
+ "zip",
+]
+
+[[package]]
 name = "deflate64"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1418,8 +1437,8 @@ dependencies = [
 name = "gui-iced"
 version = "0.1.0"
 dependencies = [
+ "deepslate-core",
  "iced",
- "obsidian-launcher-core",
  "open",
  "tokio",
  "tokio-stream",
@@ -2823,25 +2842,6 @@ dependencies = [
  "objc2 0.5.3",
  "objc2-core-location",
  "objc2-foundation 0.2.2",
-]
-
-[[package]]
-name = "obsidian-launcher-core"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "futures",
- "hex",
- "indicatif",
- "md-5",
- "reqwest",
- "serde",
- "serde_json",
- "sha1 0.11.0",
- "tokio",
- "url",
- "uuid",
- "zip",
 ]
 
 [[package]]

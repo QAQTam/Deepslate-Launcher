@@ -1,5 +1,5 @@
 [package]
-name = "obsidian-launcher-core"
+name = "deepslate-core"
 version = "0.1.0"
 description = "Obsidian Launcher 框架无关的业务核心"
 edition = "2021"

@@ -1,26 +1,26 @@
-//! Obsidian Launcher — iced 前端。
+//! 深板岩启动器（Deepslate Launcher）— iced 前端。
 //!
-//! 只消费 `obsidian-launcher-core`：数据加载用 Task::perform，
+//! 只消费 `deepslate-core`：数据加载用 Task::perform，
 //! 长任务（下载/启动）通过 core 的 CoreEvent 事件总线回流（见 `events` 模块）。
-//! 当前实现：侧边栏 + 启动页（版本/档案/Java/下载/启动/终止）。
+//! 页面切换/卡片入场动画基于 iced 内置 Animation + Float 变换。
 
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 use iced::{
-    Element, Length, Size, Subscription, Task,
+    Element, Length, Size, Subscription, Task, Vector,
+    animation::Animation,
     futures::{SinkExt, Stream},
-    widget::{Space, button, checkbox, column, container, pick_list, progress_bar, row, rule, scrollable, text, text_input},
+    widget::{Space, button, checkbox, column, container, float, pick_list, progress_bar, row, rule, scrollable, text, text_input},
 };
 use tokio::sync::{broadcast, mpsc};
 
 use launcher::events::{CoreEvent, GameState};
 use launcher::{AppConfig, ProfileStore, UserProfile};
 
-use obsidian_launcher_core as launcher;
+use deepslate_core as launcher;
 
 mod style;
-
-use style::{ACCENT, SUCCESS, TEXT_FAINT, TEXT_MUTED, TEXT_PRIMARY};
 
 // ── 事件总线：core (mpsc 单消费者) → iced 订阅 (broadcast 可重订阅) ────────
 
@@ -102,6 +102,11 @@ struct App {
     progress: Option<launcher::download::DownloadProgress>,
     launching: bool,
     game_running: bool,
+    // 亮/暗主题（持久化在 config.ui_mode: "light"/"dark"）
+    dark_mode: bool,
+    // 页面入场动画（0 → 1），now 为最近一次时钟，驱动插值
+    page_anim: Animation<bool>,
+    now: Instant,
     // Microsoft 登录（浏览器授权 + 粘贴回调 URL）
     ms_code_input: String,
     ms_logging_in: bool,
@@ -116,9 +121,18 @@ struct App {
 impl App {
     fn boot() -> (Self, Task<Message>) {
         let config = launcher::config::load().unwrap_or_default();
+        let now = Instant::now();
+        // 启动即播放入场动画
+        let mut page_anim = Animation::new(false)
+            .duration(Duration::from_millis(500))
+            .easing(iced::animation::Easing::EaseOutCubic);
+        page_anim.go_mut(true, now);
         let app = Self {
             page: Page::Launch,
             status: format!("根目录: {}", config.root_dir),
+            dark_mode: config.ui_mode != "light",
+            page_anim,
+            now,
             config,
             versions: Vec::new(),
             version_tab: VersionTab::Release,
@@ -176,6 +190,10 @@ impl App {
 #[derive(Debug, Clone)]
 enum Message {
     Navigate(Page),
+    /// 动画时钟滴答
+    Tick(Instant),
+    /// 亮/暗主题切换
+    ToggleDarkMode(bool),
     VersionsLoaded(Result<Vec<launcher::download::VersionInfo>, String>),
     ProfilesLoaded(Result<ProfileStore, String>),
     JavaLoaded(Vec<launcher::launch::JavaInfo>),
@@ -229,12 +247,31 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.pending_restore = None;
             app.pending_delete = None;
             app.confirm_reset = false;
-            if page == Page::Settings {
-                if let Some(v) = &app.selected_version {
-                    return load_backups(v.id.clone());
+            // 重播页面入场动画
+            app.now = Instant::now();
+            app.page_anim = Animation::new(false)
+                .duration(Duration::from_millis(450))
+                .easing(iced::animation::Easing::EaseOutCubic);
+            app.page_anim.go_mut(true, app.now);
+            let backup_task = if page == Page::Settings {
+                match &app.selected_version {
+                    Some(v) => load_backups(v.id.clone()),
+                    None => Task::none(),
                 }
-            }
+            } else {
+                Task::none()
+            };
+            backup_task
+        }
+        Message::Tick(t) => {
+            app.now = t;
             Task::none()
+        }
+        Message::ToggleDarkMode(dark) => {
+            app.dark_mode = dark;
+            app.config.ui_mode = if dark { "dark".to_string() } else { "light".to_string() };
+            let config = app.config.clone();
+            Task::perform(async move { launcher::config::save(&config) }, Message::SettingsSaved)
         }
         Message::VersionsLoaded(Ok(versions)) => {
             app.versions = versions;
@@ -688,8 +725,13 @@ async fn scan_java_async() -> Vec<launcher::launch::JavaInfo> {
 
 // ── 订阅 ─────────────────────────────────────────────────
 
-fn subscription(_app: &App) -> Subscription<Message> {
-    Subscription::run(listen_core_events)
+fn subscription(app: &App) -> Subscription<Message> {
+    let mut subs = vec![Subscription::run(listen_core_events)];
+    // 入场动画进行中：16ms 滴答驱动重绘，动画结束自动停
+    if app.page_anim.is_animating(app.now) {
+        subs.push(iced::time::every(Duration::from_millis(16)).map(Message::Tick));
+    }
+    Subscription::batch(subs)
 }
 
 fn listen_core_events() -> impl Stream<Item = Message> {
@@ -712,6 +754,8 @@ fn listen_core_events() -> impl Stream<Item = Message> {
 // ── 视图 ─────────────────────────────────────────────────
 
 fn view(app: &App) -> Element<'_, Message> {
+    let s = style::scheme_of(app.dark_mode);
+
     let nav = |page: Page| {
         let active = app.page == page;
         button(text(page.label()).size(14))
@@ -722,15 +766,15 @@ fn view(app: &App) -> Element<'_, Message> {
     };
 
     let busy = app.game_running || app.launching;
-    let status_dot = if busy { SUCCESS } else { TEXT_FAINT };
+    let status_dot = if busy { s.accent } else { s.text_faint };
 
     let sidebar = container(
         column![
             row![
-                text("◆").size(18).color(ACCENT),
+                text("◆").size(18).color(s.accent),
                 column![
-                    text("Obsidian").size(17).color(TEXT_PRIMARY),
-                    text("LAUNCHER").size(9).color(TEXT_FAINT),
+                    text("Deepslate").size(17).color(s.text_primary),
+                    text("深板岩启动器").size(9).color(s.text_faint),
                 ],
             ]
             .spacing(8)
@@ -742,7 +786,7 @@ fn view(app: &App) -> Element<'_, Message> {
             Space::new().height(Length::Fill),
             row![
                 text("●").size(10).color(status_dot),
-                text(game_state_label(app)).size(11).color(TEXT_MUTED),
+                text(game_state_label(app)).size(11).color(s.text_muted),
             ]
             .spacing(6),
         ]
@@ -762,11 +806,15 @@ fn view(app: &App) -> Element<'_, Message> {
         .into()
 }
 
-/// 带标题的玻璃卡片区块
-fn section_card<'a>(title: &str, body: Element<'a, Message>) -> Element<'a, Message> {
+/// 带标题的卡片区块
+fn section_card<'a>(
+    s: &style::Scheme,
+    title: &str,
+    body: Element<'a, Message>,
+) -> Element<'a, Message> {
     container(
         column![
-            text(title.to_string()).size(15).color(TEXT_PRIMARY),
+            text(title.to_string()).size(15).color(s.text_primary),
             body,
         ]
         .spacing(10),
@@ -774,6 +822,20 @@ fn section_card<'a>(title: &str, body: Element<'a, Message>) -> Element<'a, Mess
     .padding(16)
     .style(style::card)
     .into()
+}
+
+/// 卡片入场：随页面进度 t 依次上浮淡入（delay 为错峰偏移，动画结束后零开销）
+fn enter<'a>(t: f32, delay: f32, element: Element<'a, Message>) -> Element<'a, Message> {
+    let ct = ((t - delay) / 0.5).clamp(0.0, 1.0);
+    if ct >= 1.0 {
+        return element;
+    }
+    let dy = (1.0 - ct) * 14.0;
+    let scale = 1.0 - (1.0 - ct) * 0.03;
+    float(element)
+        .scale(scale)
+        .translate(move |_viewport, _bounds| Vector::new(0.0, dy))
+        .into()
 }
 
 fn game_state_label(app: &App) -> &'static str {
@@ -787,15 +849,25 @@ fn game_state_label(app: &App) -> &'static str {
 }
 
 fn page_view(app: &App) -> Element<'_, Message> {
-    match app.page {
-        Page::Launch => launch_page(app),
-        Page::Home => home_page(app),
-        Page::Settings => settings_page(app),
+    let t = app.page_anim.interpolate(0.0f32, 1.0, app.now);
+    let page = match app.page {
+        Page::Launch => launch_page(app, t),
+        Page::Home => home_page(app, t),
+        Page::Settings => settings_page(app, t),
+    };
+    // 整页轻微上浮入场
+    if t >= 1.0 {
+        page
+    } else {
+        let dy = (1.0 - t) * 10.0;
+        float(page)
+            .translate(move |_viewport, _bounds| Vector::new(0.0, dy))
+            .into()
     }
 }
 
 /// Microsoft 登录：系统浏览器授权 + 粘贴回调 URL（webview 无法自动捕获 code）
-fn ms_login_section(app: &App) -> Element<'_, Message> {
+fn ms_login_section<'a>(app: &'a App, s: &'static style::Scheme) -> Element<'a, Message> {
     let login_btn = {
         let b = button(text("完成登录").size(13)).padding(6.0);
         if app.ms_logging_in || app.ms_code_input.trim().is_empty() {
@@ -813,7 +885,7 @@ fn ms_login_section(app: &App) -> Element<'_, Message> {
                 .on_press(Message::MsAuthPressed),
             text("浏览器完成授权后，把跳转到的 URL 粘贴到下面")
                 .size(11)
-                .color(TEXT_FAINT),
+                .color(s.text_faint),
         ]
         .spacing(8),
         row![
@@ -829,7 +901,8 @@ fn ms_login_section(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn launch_page(app: &App) -> Element<'_, Message> {
+fn launch_page(app: &App, t: f32) -> Element<'_, Message> {
+    let s = style::scheme_of(app.dark_mode);
     let tab_row = row(
         [VersionTab::Release, VersionTab::Snapshot, VersionTab::Old]
             .iter()
@@ -907,16 +980,16 @@ fn launch_page(app: &App) -> Element<'_, Message> {
             progress_bar(0.0..=100.0, p.percent as f32).style(style::progress),
             text(format!("{}/{}（{}%）— {}", p.current, p.total, p.percent, p.current_file))
                 .size(12)
-                .color(TEXT_MUTED),
+                .color(s.text_muted),
         ]
         .spacing(8)
         .into(),
-        (None, true) => text("准备下载...").size(12).color(TEXT_MUTED).into(),
+        (None, true) => text("准备下载...").size(12).color(s.text_muted).into(),
         (None, false) => Space::new().height(Length::from(1)).into(),
     };
 
     let selected_summary = row![
-        text("档案:").size(12).color(TEXT_MUTED),
+        text("档案:").size(12).color(s.text_muted),
         text(
             app.selected_profile
                 .as_ref()
@@ -924,8 +997,8 @@ fn launch_page(app: &App) -> Element<'_, Message> {
                 .unwrap_or("未选择")
         )
         .size(12)
-        .color(TEXT_PRIMARY),
-        text("版本:").size(12).color(TEXT_MUTED),
+        .color(s.text_primary),
+        text("版本:").size(12).color(s.text_muted),
         text(
             app.selected_version
                 .as_ref()
@@ -933,24 +1006,23 @@ fn launch_page(app: &App) -> Element<'_, Message> {
                 .unwrap_or("未选择")
         )
         .size(12)
-        .color(TEXT_PRIMARY),
+        .color(s.text_primary),
     ]
     .spacing(8);
 
-    let version_card = section_card(
-        "版本",
-        column![tab_row, version_picker].spacing(10).into(),
-    );
+    let version_card = section_card(s, "版本", column![tab_row, version_picker].spacing(10).into());
     let profile_card = section_card(
+        s,
         "档案",
         column![
             row![profile_picker, new_profile_input].spacing(8),
-            ms_login_section(app),
+            ms_login_section(app, s),
         ]
         .spacing(10)
         .into(),
     );
     let java_card = section_card(
+        s,
         "Java 运行时",
         row![
             java_picker,
@@ -963,30 +1035,31 @@ fn launch_page(app: &App) -> Element<'_, Message> {
         .into(),
     );
     let actions_card = section_card(
+        s,
         "启动",
         column![
             row![download_btn, launch_btn].spacing(12),
             progress_section,
             selected_summary,
-            text(app.status.as_str()).size(12).color(TEXT_MUTED),
+            text(app.status.as_str()).size(12).color(s.text_muted),
         ]
         .spacing(12)
         .into(),
     );
 
     column![
-        text("启动").size(28).color(TEXT_PRIMARY),
+        text("启动").size(28).color(s.text_primary),
         text(format!(
             "游戏目录: {}",
             launcher::config::resolve_game_dir(&app.config).display()
         ))
         .size(11)
-        .color(TEXT_FAINT),
+        .color(s.text_faint),
         rule::horizontal(1.0).style(style::rule_style),
-        version_card,
-        profile_card,
-        java_card,
-        actions_card,
+        enter(t, 0.00, version_card),
+        enter(t, 0.12, profile_card),
+        enter(t, 0.24, java_card),
+        enter(t, 0.36, actions_card),
     ]
     .spacing(16)
     .max_width(660)
@@ -995,19 +1068,19 @@ fn launch_page(app: &App) -> Element<'_, Message> {
 
 // ── 首页 ─────────────────────────────────────────────────
 
-fn info_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
+fn info_row<'a>(s: &style::Scheme, label: &'a str, value: String) -> Element<'a, Message> {
     row![
-        text(label).size(13).color(TEXT_MUTED),
-        text(value).size(13),
+        text(label).size(13).color(s.text_muted),
+        text(value).size(13).color(s.text_primary),
     ]
     .spacing(8)
     .into()
 }
 
-fn home_page(app: &App) -> Element<'_, Message> {
-    let info = info_row;
+fn home_page(app: &App, t: f32) -> Element<'_, Message> {
+    let s = style::scheme_of(app.dark_mode);
 
-    let profile_line = info(
+    let profile_line = info_row(s, 
         "档案:",
         app.selected_profile
             .as_ref()
@@ -1020,24 +1093,25 @@ fn home_page(app: &App) -> Element<'_, Message> {
             })
             .unwrap_or_else(|| "未选择".to_string()),
     );
-    let version_line = info(
+    let version_line = info_row(s, 
         "版本:",
         app.selected_version
             .as_ref()
             .map(|v| v.id.clone())
             .unwrap_or_else(|| "未选择".to_string()),
     );
-    let java_line = info(
+    let java_line = info_row(s, 
         "Java:",
         app.selected_java
             .as_ref()
             .map(|j| j.version.clone())
             .unwrap_or_else(|| "未找到".to_string()),
     );
-    let state_line = info("游戏:", game_state_label(app).to_string());
-    let root_line = info("根目录:", app.config.root_dir.clone());
+    let state_line = info_row(s, "游戏:", game_state_label(app).to_string());
+    let root_line = info_row(s, "根目录:", app.config.root_dir.clone());
 
     let status_card = section_card(
+        s,
         "当前状态",
         column![
             profile_line,
@@ -1076,14 +1150,14 @@ fn home_page(app: &App) -> Element<'_, Message> {
     };
 
     column![
-        text("首页").size(28).color(TEXT_PRIMARY),
+        text("首页").size(28).color(s.text_primary),
         rule::horizontal(1.0).style(style::rule_style),
-        status_card,
-        row![launch_btn, download_btn,].spacing(12),
+        enter(t, 0.0, status_card),
+        enter(t, 0.12, row![launch_btn, download_btn,].spacing(12).into()),
         text("提示：版本 / 档案 / Java 在「启动」页选择；目录与隔离选项在「设置」页。")
             .size(12)
-            .color(TEXT_FAINT),
-        text(app.status.as_str()).size(12).color(TEXT_MUTED),
+            .color(s.text_faint),
+        text(app.status.as_str()).size(12).color(s.text_muted),
     ]
     .spacing(16)
     .max_width(660)
@@ -1092,7 +1166,8 @@ fn home_page(app: &App) -> Element<'_, Message> {
 
 // ── 设置页 ───────────────────────────────────────────────
 
-fn settings_page(app: &App) -> Element<'_, Message> {
+fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
+    let s = style::scheme_of(app.dark_mode);
     let config_path = launcher::config::config_path()
         .map(|p| p.join("config.json").display().to_string())
         .unwrap_or_else(|e| e);
@@ -1119,7 +1194,7 @@ fn settings_page(app: &App) -> Element<'_, Message> {
 
             let saves_src = launcher::backup::version_saves_dir(&app.config, &version.id);
             let list: Element<Message> = if app.backups.is_empty() {
-                text("暂无备份").size(12).color(TEXT_MUTED).into()
+                text("暂无备份").size(12).color(s.text_muted).into()
             } else {
                 let rows = app
                     .backups
@@ -1170,22 +1245,22 @@ fn settings_page(app: &App) -> Element<'_, Message> {
             };
 
             column![
-                text(format!("存档备份 — {}", version.id)).size(15).color(TEXT_PRIMARY),
-                text(format!("源目录: {}", saves_src.display())).size(11).color(TEXT_MUTED),
+                text(format!("存档备份 — {}", version.id)).size(15).color(s.text_primary),
+                text(format!("源目录: {}", saves_src.display())).size(11).color(s.text_muted),
                 create_btn,
                 list,
                 if game_busy {
-                    text("游戏运行中，恢复/备份已禁用").size(11).color(TEXT_MUTED)
+                    text("游戏运行中，恢复/备份已禁用").size(11).color(s.text_muted)
                 } else {
-                    text("恢复会覆盖当前存档（自动保留最近 5 份备份）").size(11).color(TEXT_MUTED)
+                    text("恢复会覆盖当前存档（自动保留最近 5 份备份）").size(11).color(s.text_muted)
                 },
             ]
             .spacing(8)
             .into()
         }
         None => column![
-            text("存档备份").size(15).color(TEXT_PRIMARY),
-            text("请先在「启动」页选择一个版本").size(12).color(TEXT_MUTED),
+            text("存档备份").size(15).color(s.text_primary),
+            text("请先在「启动」页选择一个版本").size(12).color(s.text_muted),
         ]
         .spacing(6)
         .into(),
@@ -1214,7 +1289,20 @@ fn settings_page(app: &App) -> Element<'_, Message> {
             .on_press(Message::ResetAllPressed)
     };
 
+    let appearance_card = section_card(
+        s,
+        "外观",
+        column![
+            checkbox(app.dark_mode)
+                .label("暗色模式（牛皮纸黄 × 石板灰）")
+                .on_toggle(Message::ToggleDarkMode)
+                .size(13)
+                .style(style::checkbox_style),
+        ]
+        .into(),
+    );
     let root_card = section_card(
+        s,
         "根目录",
         text_input("如 /home/xxx/Games/ObsidianLauncher", &app.config.root_dir)
             .on_input(Message::RootDirChanged)
@@ -1222,6 +1310,7 @@ fn settings_page(app: &App) -> Element<'_, Message> {
             .into(),
     );
     let isolation_card = section_card(
+        s,
         "目录隔离",
         column![
             checkbox(app.config.version_isolation)
@@ -1238,31 +1327,30 @@ fn settings_page(app: &App) -> Element<'_, Message> {
         .spacing(10)
         .into(),
     );
-    let concurrency_card = section_card(
-        "下载并发数",
-        concurrency_picker.into(),
-    );
+    let concurrency_card = section_card(s, "下载并发数", concurrency_picker.into());
     let dirs_card = section_card(
+        s,
         "实际目录",
         column![
-            text(format!("配置文件: {}", config_path)).size(12).color(TEXT_MUTED),
-            text(format!("游戏目录: {}", game_dir)).size(12).color(TEXT_MUTED),
-            text(format!("存档目录: {}", saves_dir)).size(12).color(TEXT_MUTED),
-            text(format!("版本目录: {}", versions_dir)).size(12).color(TEXT_MUTED),
+            text(format!("配置文件: {}", config_path)).size(12).color(s.text_muted),
+            text(format!("游戏目录: {}", game_dir)).size(12).color(s.text_muted),
+            text(format!("存档目录: {}", saves_dir)).size(12).color(s.text_muted),
+            text(format!("版本目录: {}", versions_dir)).size(12).color(s.text_muted),
         ]
         .spacing(5)
         .into(),
     );
-    let backup_card = container(backup_section).padding(16).style(style::card);
+    let backup_card: Element<Message> = container(backup_section).padding(16).style(style::card).into();
 
     column![
-        text("设置").size(28).color(TEXT_PRIMARY),
+        text("设置").size(28).color(s.text_primary),
         rule::horizontal(1.0).style(style::rule_style),
-        root_card,
-        isolation_card,
-        concurrency_card,
-        dirs_card,
-        backup_card,
+        enter(t, 0.00, appearance_card),
+        enter(t, 0.10, root_card),
+        enter(t, 0.20, isolation_card),
+        enter(t, 0.30, concurrency_card),
+        enter(t, 0.40, dirs_card),
+        enter(t, 0.50, backup_card),
         row![
             button(text("保存设置"))
                 .padding(8.0)
@@ -1273,7 +1361,7 @@ fn settings_page(app: &App) -> Element<'_, Message> {
         .spacing(12),
         text("保存时会同时记录当前选中的档案与 Java 路径。重置会删除 config.json 与 profiles.json（游戏文件不受影响）。")
             .size(12)
-            .color(TEXT_FAINT),
+            .color(s.text_faint),
     ]
     .spacing(16)
     .max_width(680)
@@ -1284,8 +1372,8 @@ fn settings_page(app: &App) -> Element<'_, Message> {
 
 fn main() -> iced::Result {
     iced::application(App::boot, update, view)
-        .title(|_app: &App| "Obsidian Launcher".to_string())
-        .theme(|_app: &App| style::theme())
+        .title(|_app: &App| "深板岩启动器".to_string())
+        .theme(|app: &App| if app.dark_mode { style::theme_dark() } else { style::theme_light() })
         .subscription(subscription)
         .window(iced::window::Settings {
             min_size: Some(Size::new(900.0, 560.0)),

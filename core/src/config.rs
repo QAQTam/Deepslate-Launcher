@@ -55,7 +55,7 @@ impl Default for AppConfig {
             java_path: None,
             download_concurrency: 32,
             first_launch: true,
-            ui_mode: "gorgeous".to_string(),
+            ui_mode: "dark".to_string(),
         }
     }
 }

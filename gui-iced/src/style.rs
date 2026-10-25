@@ -1,34 +1,81 @@
-//! Void Crystal 视觉体系（iced 版）：深紫底色 + 紫罗兰强调 + 玻璃卡片。
+//! 深板岩启动器视觉体系：牛皮纸黄 × 石板灰，亮/暗双主题。
+//! 主色只允许牛皮纸黄与各级灰色；红色仅用于危险操作，无紫无绿。
 
 use iced::{
     Border, Color, Shadow, Theme, Vector,
     widget::{button, checkbox, container, pick_list, progress_bar, rule, text_input},
 };
 
-// ── 色板 ─────────────────────────────────────────────────
-
-pub const BG_DEEP: Color = Color::from_rgb8(0x0f, 0x0d, 0x1a);
-pub const BG_SIDEBAR: Color = Color::from_rgb8(0x16, 0x13, 0x26);
-pub const BG_CARD: Color = Color::from_rgb8(0x1b, 0x17, 0x2e);
-pub const BG_FIELD: Color = Color::from_rgb8(0x12, 0x0f, 0x20);
-pub const ACCENT: Color = Color::from_rgb8(0x8b, 0x5c, 0xf6);
-pub const ACCENT_BRIGHT: Color = Color::from_rgb8(0xa7, 0x8b, 0xfa);
-pub const ACCENT_DEEP: Color = Color::from_rgb8(0x6d, 0x3e, 0xd8);
-pub const DANGER: Color = Color::from_rgb8(0xef, 0x44, 0x44);
-pub const DANGER_DEEP: Color = Color::from_rgb8(0xc2, 0x33, 0x33);
-pub const SUCCESS: Color = Color::from_rgb8(0x34, 0xd3, 0x99);
-pub const TEXT_PRIMARY: Color = Color::from_rgb8(0xf5, 0xf3, 0xff);
-pub const TEXT_MUTED: Color = Color::from_rgb8(0x9d, 0x93, 0xc8);
-pub const TEXT_FAINT: Color = Color::from_rgb8(0x6b, 0x62, 0x96);
-
-fn accent_alpha(a: f32) -> Color {
-    Color { r: ACCENT.r, g: ACCENT.g, b: ACCENT.b, a }
+/// 一套完整配色（亮/暗各一份）
+pub struct Scheme {
+    pub bg_deep: Color,
+    pub bg_sidebar: Color,
+    pub bg_card: Color,
+    pub bg_field: Color,
+    pub accent: Color,
+    pub accent_hover: Color,
+    pub accent_press: Color,
+    pub danger: Color,
+    pub danger_hover: Color,
+    pub danger_press: Color,
+    pub text_primary: Color,
+    pub text_muted: Color,
+    pub text_faint: Color,
 }
 
-/// 柔和的紫色投影（卡片/主按钮）
-fn glow(alpha: f32) -> Shadow {
+/// 暗色：石板灰底 + 牛皮纸黄点缀
+pub const DARK: Scheme = Scheme {
+    bg_deep: Color::from_rgb8(0x1b, 0x1d, 0x21),
+    bg_sidebar: Color::from_rgb8(0x15, 0x17, 0x1a),
+    bg_card: Color::from_rgb8(0x24, 0x27, 0x2b),
+    bg_field: Color::from_rgb8(0x11, 0x13, 0x16),
+    accent: Color::from_rgb8(0xd2, 0xa2, 0x4c),
+    accent_hover: Color::from_rgb8(0xe4, 0xbb, 0x6e),
+    accent_press: Color::from_rgb8(0xb4, 0x87, 0x38),
+    danger: Color::from_rgb8(0xd9, 0x53, 0x4f),
+    danger_hover: Color::from_rgb8(0xe7, 0x74, 0x70),
+    danger_press: Color::from_rgb8(0xb6, 0x42, 0x3e),
+    text_primary: Color::from_rgb8(0xed, 0xeb, 0xe4),
+    text_muted: Color::from_rgb8(0x9c, 0x99, 0x91),
+    text_faint: Color::from_rgb8(0x6d, 0x6a, 0x62),
+};
+
+/// 亮色：牛皮纸底 + 深牛皮黄点缀
+pub const LIGHT: Scheme = Scheme {
+    bg_deep: Color::from_rgb8(0xee, 0xeb, 0xe1),
+    bg_sidebar: Color::from_rgb8(0xe3, 0xdf, 0xd2),
+    bg_card: Color::from_rgb8(0xfa, 0xf8, 0xf1),
+    bg_field: Color::from_rgb8(0xff, 0xfe, 0xfa),
+    accent: Color::from_rgb8(0xa9, 0x77, 0x2b),
+    accent_hover: Color::from_rgb8(0x8f, 0x63, 0x1e),
+    accent_press: Color::from_rgb8(0x7a, 0x54, 0x18),
+    danger: Color::from_rgb8(0xc0, 0x39, 0x2b),
+    danger_hover: Color::from_rgb8(0xa9, 0x32, 0x25),
+    danger_press: Color::from_rgb8(0x8f, 0x2a, 0x1f),
+    text_primary: Color::from_rgb8(0x2e, 0x2c, 0x26),
+    text_muted: Color::from_rgb8(0x71, 0x6d, 0x61),
+    text_faint: Color::from_rgb8(0xa2, 0x9d, 0x8e),
+};
+
+/// 视图层按暗色开关取方案
+pub fn scheme_of(dark: bool) -> &'static Scheme {
+    if dark { &DARK } else { &LIGHT }
+}
+
+/// 样式层按 iced 主题背景亮度取方案
+pub fn scheme(theme: &Theme) -> &'static Scheme {
+    let bg = theme.palette().background;
+    if bg.r + bg.g + bg.b > 1.5 { &LIGHT } else { &DARK }
+}
+
+fn with_alpha(c: Color, a: f32) -> Color {
+    Color { r: c.r, g: c.g, b: c.b, a }
+}
+
+/// 柔和的暖色投影（卡片/主按钮）
+fn glow(c: Color, alpha: f32) -> Shadow {
     Shadow {
-        color: accent_alpha(alpha),
+        color: with_alpha(c, alpha),
         offset: Vector::new(0.0, 3.0),
         blur_radius: 14.0,
     }
@@ -36,41 +83,51 @@ fn glow(alpha: f32) -> Shadow {
 
 // ── 主题 ─────────────────────────────────────────────────
 
-pub fn theme() -> Theme {
+pub fn theme_dark() -> Theme {
+    theme_with(&DARK, "Deepslate Dark")
+}
+
+pub fn theme_light() -> Theme {
+    theme_with(&LIGHT, "Deepslate Light")
+}
+
+fn theme_with(s: &Scheme, name: &'static str) -> Theme {
     Theme::custom(
-        "Void Crystal",
+        name,
         iced::theme::Palette {
-            background: BG_DEEP,
-            text: TEXT_PRIMARY,
-            primary: ACCENT,
-            success: SUCCESS,
-            warning: Color::from_rgb8(0xfb, 0xbf, 0x24),
-            danger: DANGER,
+            background: s.bg_deep,
+            text: s.text_primary,
+            primary: s.accent,
+            success: s.accent,
+            warning: s.accent,
+            danger: s.danger,
         },
     )
 }
 
 // ── 容器 ─────────────────────────────────────────────────
 
-pub fn card(_theme: &Theme) -> container::Style {
+pub fn card(theme: &Theme) -> container::Style {
+    let s = scheme(theme);
     container::Style {
-        background: Some(BG_CARD.into()),
+        background: Some(s.bg_card.into()),
         border: Border {
-            color: accent_alpha(0.22),
+            color: with_alpha(s.accent, 0.28),
             width: 1.0,
             radius: 14.0.into(),
         },
-        shadow: glow(0.18),
-        text_color: Some(TEXT_PRIMARY),
+        shadow: glow(s.accent, 0.15),
+        text_color: Some(s.text_primary),
         snap: false,
     }
 }
 
-pub fn sidebar(_theme: &Theme) -> container::Style {
+pub fn sidebar(theme: &Theme) -> container::Style {
+    let s = scheme(theme);
     container::Style {
-        background: Some(BG_SIDEBAR.into()),
+        background: Some(s.bg_sidebar.into()),
         border: Border {
-            color: accent_alpha(0.12),
+            color: with_alpha(s.accent, 0.10),
             width: 1.0,
             radius: 0.0.into(),
         },
@@ -78,20 +135,22 @@ pub fn sidebar(_theme: &Theme) -> container::Style {
     }
 }
 
-pub fn page(_theme: &Theme) -> container::Style {
+pub fn page(theme: &Theme) -> container::Style {
+    let s = scheme(theme);
     container::Style {
-        background: Some(BG_DEEP.into()),
+        background: Some(s.bg_deep.into()),
         ..Default::default()
     }
 }
 
 // ── 按钮 ─────────────────────────────────────────────────
 
-pub fn primary(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn primary(theme: &Theme, status: button::Status) -> button::Style {
+    let s = scheme(theme);
     let (bg, shadow) = match status {
-        button::Status::Hovered => (ACCENT_BRIGHT, glow(0.35)),
-        button::Status::Pressed => (ACCENT_DEEP, Shadow::default()),
-        _ => (ACCENT, glow(0.25)),
+        button::Status::Hovered => (s.accent_hover, glow(s.accent, 0.30)),
+        button::Status::Pressed => (s.accent_press, Shadow::default()),
+        _ => (s.accent, glow(s.accent, 0.22)),
     };
     button::Style {
         background: Some(bg.into()),
@@ -105,11 +164,12 @@ pub fn primary(_theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-pub fn danger(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn danger(theme: &Theme, status: button::Status) -> button::Style {
+    let s = scheme(theme);
     let bg = match status {
-        button::Status::Hovered => Color::from_rgb8(0xf8, 0x71, 0x71),
-        button::Status::Pressed => DANGER_DEEP,
-        _ => DANGER,
+        button::Status::Hovered => s.danger_hover,
+        button::Status::Pressed => s.danger_press,
+        _ => s.danger,
     };
     button::Style {
         background: Some(bg.into()),
@@ -118,25 +178,22 @@ pub fn danger(_theme: &Theme, status: button::Status) -> button::Style {
             radius: 10.0.into(),
             ..Default::default()
         },
-        shadow: Shadow {
-            color: Color { r: DANGER.r, g: DANGER.g, b: DANGER.b, a: 0.25 },
-            offset: Vector::new(0.0, 3.0),
-            blur_radius: 14.0,
-        },
+        shadow: glow(s.danger, 0.22),
         snap: false,
     }
 }
 
-pub fn secondary(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn secondary(theme: &Theme, status: button::Status) -> button::Style {
+    let s = scheme(theme);
     let bg = match status {
-        button::Status::Hovered => accent_alpha(0.14),
+        button::Status::Hovered => with_alpha(s.accent, 0.14),
         _ => Color::TRANSPARENT,
     };
     button::Style {
         background: Some(bg.into()),
-        text_color: TEXT_PRIMARY,
+        text_color: s.text_primary,
         border: Border {
-            color: accent_alpha(0.35),
+            color: with_alpha(s.accent, 0.38),
             width: 1.0,
             radius: 10.0.into(),
         },
@@ -145,27 +202,28 @@ pub fn secondary(_theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// 侧栏导航 / 标签页按钮：激活态为半透明紫色胶囊
+/// 侧栏导航 / 标签页按钮：激活态为半透明牛皮黄胶囊
 pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_theme, status| {
+    move |theme, status| {
+        let s = scheme(theme);
         let (bg, text) = if active {
             let bg = match status {
-                button::Status::Hovered => accent_alpha(0.30),
-                _ => accent_alpha(0.20),
+                button::Status::Hovered => with_alpha(s.accent, 0.32),
+                _ => with_alpha(s.accent, 0.20),
             };
-            (bg, TEXT_PRIMARY)
+            (bg, s.text_primary)
         } else {
             let bg = match status {
-                button::Status::Hovered => Color { r: 1.0, g: 1.0, b: 1.0, a: 0.05 },
+                button::Status::Hovered => with_alpha(s.text_primary, 0.06),
                 _ => Color::TRANSPARENT,
             };
-            (bg, TEXT_MUTED)
+            (bg, s.text_muted)
         };
         button::Style {
             background: Some(bg.into()),
             text_color: text,
             border: Border {
-                color: if active { accent_alpha(0.45) } else { Color::TRANSPARENT },
+                color: if active { with_alpha(s.accent, 0.5) } else { Color::TRANSPARENT },
                 width: 1.0,
                 radius: 10.0.into(),
             },
@@ -177,80 +235,82 @@ pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
 
 // ── 输入控件 ─────────────────────────────────────────────
 
-pub fn text_field(_theme: &Theme, status: text_input::Status) -> text_input::Style {
+pub fn text_field(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let s = scheme(theme);
     let border = match status {
         text_input::Status::Focused { .. } => Border {
-            color: accent_alpha(0.6),
+            color: with_alpha(s.accent, 0.65),
             width: 1.2,
             radius: 10.0.into(),
         },
         _ => Border {
-            color: accent_alpha(0.25),
+            color: with_alpha(s.accent, 0.28),
             width: 1.0,
             radius: 10.0.into(),
         },
     };
     text_input::Style {
-        background: BG_FIELD.into(),
+        background: s.bg_field.into(),
         border,
-        icon: TEXT_MUTED,
-        placeholder: TEXT_FAINT,
-        value: TEXT_PRIMARY,
-        selection: accent_alpha(0.5),
+        icon: s.text_muted,
+        placeholder: s.text_faint,
+        value: s.text_primary,
+        selection: with_alpha(s.accent, 0.45),
     }
 }
 
-pub fn pick(_theme: &Theme, _status: pick_list::Status) -> pick_list::Style {
+pub fn pick(theme: &Theme, _status: pick_list::Status) -> pick_list::Style {
+    let s = scheme(theme);
     pick_list::Style {
-        text_color: TEXT_PRIMARY,
-        placeholder_color: TEXT_FAINT,
-        handle_color: ACCENT,
-        background: BG_FIELD.into(),
+        text_color: s.text_primary,
+        placeholder_color: s.text_faint,
+        handle_color: s.accent,
+        background: s.bg_field.into(),
         border: Border {
-            color: accent_alpha(0.25),
+            color: with_alpha(s.accent, 0.28),
             width: 1.0,
             radius: 10.0.into(),
         },
     }
 }
 
-pub fn checkbox_style(
-    _theme: &Theme,
-    status: checkbox::Status,
-) -> checkbox::Style {
+pub fn checkbox_style(theme: &Theme, status: checkbox::Status) -> checkbox::Style {
+    let s = scheme(theme);
     let is_checked = matches!(
         status,
         checkbox::Status::Active { is_checked: true, .. }
     );
     checkbox::Style {
-        background: if is_checked { ACCENT.into() } else { BG_FIELD.into() },
+        background: if is_checked { s.accent.into() } else { s.bg_field.into() },
         icon_color: Color::WHITE,
         border: Border {
-            color: if is_checked { ACCENT } else { accent_alpha(0.4) },
+            color: if is_checked { s.accent } else { with_alpha(s.accent, 0.45) },
             width: 1.0,
             radius: 6.0.into(),
         },
-        text_color: Some(TEXT_PRIMARY),
+        text_color: Some(s.text_primary),
     }
 }
 
 // ── 进度条 / 分隔线 ──────────────────────────────────────
 
-pub fn progress(_theme: &Theme) -> progress_bar::Style {
+pub fn progress(theme: &Theme) -> progress_bar::Style {
+    let s = scheme(theme);
     progress_bar::Style {
-        background: BG_FIELD.into(),
-        bar: ACCENT.into(),
+        background: s.bg_field.into(),
+        bar: s.accent.into(),
         border: Border {
-            color: accent_alpha(0.3),
+            color: with_alpha(s.accent, 0.35),
             width: 1.0,
             radius: 999.0.into(),
         },
     }
 }
 
-pub fn rule_style(_theme: &Theme) -> rule::Style {
+pub fn rule_style(theme: &Theme) -> rule::Style {
+    let s = scheme(theme);
     rule::Style {
-        color: accent_alpha(0.25),
+        color: with_alpha(s.accent, 0.28),
         radius: 2.0.into(),
         fill_mode: rule::FillMode::Full,
         snap: true,
