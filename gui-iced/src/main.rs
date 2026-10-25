@@ -52,9 +52,7 @@ fn core_event_sender() -> mpsc::Sender<CoreEvent> {
 enum Page {
     Home,
     Launch,
-    News,
     Settings,
-    Mods,
 }
 
 impl Page {
@@ -62,9 +60,7 @@ impl Page {
         match self {
             Page::Home => "首页",
             Page::Launch => "启动",
-            Page::News => "新闻",
             Page::Settings => "设置",
-            Page::Mods => "Mods",
         }
     }
 }
@@ -105,8 +101,6 @@ struct App {
     // Microsoft 登录（浏览器授权 + 粘贴回调 URL）
     ms_code_input: String,
     ms_logging_in: bool,
-    // Mods 页
-    mods: Vec<launcher::modmanager::ModInfo>,
     // 设置页危险区二次确认
     confirm_reset: bool,
 }
@@ -132,7 +126,6 @@ impl App {
             game_running: false,
             ms_code_input: String::new(),
             ms_logging_in: false,
-            mods: Vec::new(),
             confirm_reset: false,
         };
 
@@ -204,12 +197,6 @@ enum Message {
     SettingsSaved(Result<(), String>),
     ResetAllPressed,
     ResetAllDone(Result<(), String>),
-    // Mods（GhastLoader）
-    ModsLoaded(Result<Vec<launcher::modmanager::ModInfo>, String>),
-    ToggleMod(String),
-    ModToggled(Result<(), String>),
-    InstallGhastloader,
-    GhastloaderInstalled(Result<String, String>),
     CoreEvent(CoreEvent),
 }
 
@@ -219,9 +206,6 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => {
             app.page = page;
-            if page == Page::Mods {
-                return load_mods(&app.config);
-            }
             Task::none()
         }
         Message::VersionsLoaded(Ok(versions)) => {
@@ -514,48 +498,6 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.status = format!("重置失败: {}", e);
             Task::none()
         }
-        Message::ModsLoaded(Ok(mods)) => {
-            app.mods = mods;
-            Task::none()
-        }
-        Message::ModsLoaded(Err(e)) => {
-            app.mods.clear();
-            app.status = format!("加载 mod 列表失败: {}", e);
-            Task::none()
-        }
-        Message::ToggleMod(id) => {
-            let game_dir = launcher::config::resolve_game_dir(&app.config).to_string_lossy().to_string();
-            let enabled = app
-                .mods
-                .iter()
-                .find(|m| m.id == id)
-                .map(|m| !m.enabled)
-                .unwrap_or(true);
-            Task::perform(
-                async move { launcher::modmanager::toggle_mod(&game_dir, &id, enabled) },
-                Message::ModToggled,
-            )
-        }
-        Message::ModToggled(Ok(())) => load_mods(&app.config),
-        Message::ModToggled(Err(e)) => {
-            app.status = format!("切换 mod 状态失败: {}", e);
-            Task::none()
-        }
-        Message::InstallGhastloader => {
-            let game_dir = launcher::config::resolve_game_dir(&app.config).to_string_lossy().to_string();
-            Task::perform(
-                async move { launcher::modmanager::install_ghastloader(&game_dir) },
-                Message::GhastloaderInstalled,
-            )
-        }
-        Message::GhastloaderInstalled(Ok(result)) => {
-            app.status = format!("GhastLoader: {}", result);
-            load_mods(&app.config)
-        }
-        Message::GhastloaderInstalled(Err(e)) => {
-            app.status = format!("GhastLoader 安装失败: {}", e);
-            Task::none()
-        }
         Message::CoreEvent(event) => match event {
             CoreEvent::DownloadProgress(p) => {
                 if p.percent >= 100 {
@@ -587,12 +529,6 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
         },
     }
-}
-
-/// 拉取 mod 列表（切换到 Mods 页 / 操作完成后刷新）
-fn load_mods(config: &AppConfig) -> Task<Message> {
-    let game_dir = launcher::config::resolve_game_dir(config).to_string_lossy().to_string();
-    Task::perform(async move { launcher::modmanager::list_mods(&game_dir) }, Message::ModsLoaded)
 }
 
 /// 从粘贴的回调 URL 中提取授权码，也接受直接粘贴的裸 code
@@ -706,9 +642,7 @@ fn view(app: &App) -> Element<'_, Message> {
             Space::new().height(Length::from(16)),
             nav(Page::Home),
             nav(Page::Launch),
-            nav(Page::News),
             nav(Page::Settings),
-            nav(Page::Mods),
             Space::new().height(Length::Fill),
             text(game_state_label(app)).size(12).color(TEXT_MUTED),
         ]
@@ -746,15 +680,6 @@ fn page_view(app: &App) -> Element<'_, Message> {
         Page::Launch => launch_page(app),
         Page::Home => home_page(app),
         Page::Settings => settings_page(app),
-        Page::Mods => mods_page(app),
-        Page::News => column![
-            text("新闻").size(24).color(TEXT_PRIMARY),
-            text("该页面尚未迁移到 iced 版，敬请期待。")
-                .size(14)
-                .color(TEXT_MUTED),
-        ]
-        .spacing(12)
-        .into(),
     }
 }
 
@@ -1114,66 +1039,6 @@ fn settings_page(app: &App) -> Element<'_, Message> {
     ]
     .spacing(14)
     .max_width(640)
-    .into()
-}
-
-// ── Mods 页（GhastLoader） ───────────────────────────────
-
-fn mods_page(app: &App) -> Element<'_, Message> {
-    let install_btn = button(text("安装 / 更新 GhastLoader").color(Color::WHITE))
-        .padding(8.0)
-        .style(button::primary)
-        .on_press(Message::InstallGhastloader);
-
-    let list: Element<Message> = if app.mods.is_empty() {
-        text("mods/ 目录暂无 mod。将含 mod.json 的 .jar 放入游戏目录的 mods/ 后切回本页即可。")
-            .size(13)
-            .color(TEXT_MUTED)
-            .into()
-    } else {
-        let rows = app
-            .mods
-            .iter()
-            .map(|m| {
-                let toggle_label = if m.enabled { "已启用" } else { "已禁用" };
-                container(row![
-                    column![
-                        text(m.id.clone()).size(14).color(if m.enabled {
-                            TEXT_PRIMARY
-                        } else {
-                            TEXT_MUTED
-                        }),
-                        text(format!("v{} — {}", m.version, m.entry)).size(11).color(TEXT_MUTED),
-                    ]
-                    .spacing(2),
-                    Space::new().width(Length::Fill),
-                    button(text(toggle_label).size(12))
-                        .padding(6.0)
-                        .on_press(Message::ToggleMod(m.id.clone())),
-                ]
-                .spacing(8))
-                .padding(12)
-                .style(card_style)
-                .into()
-            })
-            .collect::<Vec<_>>();
-
-        column(rows).spacing(10).into()
-    };
-
-    column![
-        text("Mods — GhastLoader").size(26).color(TEXT_PRIMARY),
-        row![
-            install_btn,
-            text("Java Agent 事件总线式 mod 加载器，启动游戏时自动注入。")
-                .size(12)
-                .color(TEXT_MUTED),
-        ]
-        .spacing(12),
-        list,
-    ]
-    .spacing(14)
-    .max_width(680)
     .into()
 }
 

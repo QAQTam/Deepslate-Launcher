@@ -28,12 +28,10 @@ cargo build                       # Build the whole Rust workspace
   - **`download.rs`**: Downloads versions/libraries/assets from Mojang's CDN with SHA1 verification and bounded concurrency.
   - **`launch.rs`**: Game process spawning (new `arguments` + legacy `minecraftArguments`, `inheritsFrom` merging, natives extraction), Java runtime scanning, GhastLoader javaagent injection.
   - **`backup.rs`**: Saves symlink isolation, backup/restore via rsync/xcopy (Linux/Windows).
-  - **`news.rs`**: minecraft.net news feed + article scraping.
-  - **`modmanager.rs`**: GhastLoader mod list/toggle/install.
 
 - **`src-tauri/`**: thin Tauri shell. `src-tauri/src/lib.rs` only bridges Tauri commands to `core` and forwards `CoreEvent` channels to frontend events (`download-progress`, `game-state`, `auth-progress`). All business logic lives in `core/`.
 
-- **`gui-iced/`** (bin `obsidian-iced`): iced 0.14 frontend, consumes `core` directly. Progress events flow through a static broadcast bus (`gui-iced/src/main.rs`: `EVENT_BUS` + `core_event_sender()`) into an iced `Subscription`. Implemented pages: Home (status overview + quick actions), Launch (version tabs/pickers, offline profile creation, Microsoft login via browser + pasted callback URL, Java scan, download progress, launch/kill), Settings (root dir, isolation toggles, download concurrency, save/reset), Mods (GhastLoader list/toggle/install). News is a placeholder. Run with `cargo run -p gui-iced`.
+- **`gui-iced/`** (bin `obsidian-iced`): iced 0.14 frontend, consumes `core` directly. Progress events flow through a static broadcast bus (`gui-iced/src/main.rs`: `EVENT_BUS` + `core_event_sender()`) into an iced `Subscription`. Pages: Home (status overview + quick actions), Launch (version tabs/pickers, offline profile creation, Microsoft login via browser + pasted callback URL, Java scan, download progress, launch/kill), Settings (root dir, isolation toggles, download concurrency, save/reset). Run with `cargo run -p gui-iced`.
 
 ### Linux build prerequisites
 
@@ -69,7 +67,6 @@ Key commands exposed to frontend (thin wrappers in `src-tauri/src/lib.rs`, imple
 - `create_profile`, `delete_profile`, `login_microsoft_with_code` - Profile management (`login_microsoft` always errors: webview cannot capture the OAuth callback; use the browser + manual code paste flow)
 - `create_saves_backup`, `restore_saves_backup`, `list_saves_backups` - Save management
 - `set_config`, `reset_all_config` - Configuration
-- `list_mods`, `toggle_mod`, `install_ghastloader` - GhastLoader mod management
 
 ### Event Emitters
 

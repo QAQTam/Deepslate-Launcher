@@ -3,8 +3,6 @@ import { Sidebar } from './components/layout/Sidebar'
 import { HomePage } from './components/pages/HomePage'
 import { LaunchPage } from './components/pages/LaunchPage'
 import { SettingsPage } from './components/pages/SettingsPage'
-import { NewsPage } from './components/pages/NewsPage'
-import { ModsPage } from './components/pages/ModsPage'
 import { AppProvider } from './contexts/AppProvider'
 
 function AppContent() {
@@ -24,10 +22,6 @@ function AppContent() {
         return <LaunchPage />
       case 'settings':
         return <SettingsPage />
-      case 'news':
-        return <NewsPage />
-      case 'mods':
-        return <ModsPage />
       default:
         return <HomePage />
     }

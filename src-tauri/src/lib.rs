@@ -258,40 +258,6 @@ fn delete_saves_backup(version: String, backup_name: String) -> Result<(), Strin
     launcher::backup::delete(&version, &backup_name)
 }
 
-// ── 新闻 ─────────────────────────────────────────────
-
-#[tauri::command]
-async fn fetch_minecraft_news(page: Option<u64>) -> Result<launcher::news::MinecraftNewsResponse, String> {
-    launcher::news::fetch_minecraft_news(page).await
-}
-
-#[tauri::command]
-async fn fetch_article_detail(url: String) -> Result<launcher::news::MinecraftArticleDetail, String> {
-    launcher::news::fetch_article_detail(url).await
-}
-
-#[tauri::command]
-fn open_url(url: String) -> Result<(), String> {
-    open::that(&url).map_err(|e| format!("Failed to open URL: {}", e))
-}
-
-// ── Mod 管理（GhastLoader） ──────────────────────────
-
-#[tauri::command]
-fn list_mods(game_dir: String) -> Result<Vec<launcher::modmanager::ModInfo>, String> {
-    launcher::modmanager::list_mods(&game_dir)
-}
-
-#[tauri::command]
-fn toggle_mod(game_dir: String, mod_id: String, enabled: bool) -> Result<(), String> {
-    launcher::modmanager::toggle_mod(&game_dir, &mod_id, enabled)
-}
-
-#[tauri::command]
-fn install_ghastloader(game_dir: String) -> Result<String, String> {
-    launcher::modmanager::install_ghastloader(&game_dir)
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -327,13 +293,7 @@ pub fn run() {
             login_microsoft,
             login_microsoft_with_code,
             get_microsoft_auth_url,
-            open_microsoft_auth,
-            fetch_minecraft_news,
-            fetch_article_detail,
-            open_url,
-            list_mods,
-            toggle_mod,
-            install_ghastloader
+            open_microsoft_auth
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

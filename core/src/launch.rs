@@ -621,17 +621,6 @@ pub async fn launch(
         }
     }
 
-    // --- GhastLoader Mod Loader ---
-    // 将 GhastLoader Java Agent 注入 JVM 参数，实现事件总线式 mod 加载
-    {
-        let loader_jar = opt.game_dir.join("ghastloader").join("ghastloader.jar");
-        if loader_jar.exists() {
-            jvm_args.push("-javaagent".to_string());
-            jvm_args.push(loader_jar.to_string_lossy().to_string());
-            println!("[GhastLoader] Agent injected: {}", loader_jar.display());
-        }
-    }
-
     // 8. 构建游戏参数
     let mut game_args = Vec::new();
     game_args.push("--username".to_string());

@@ -12,8 +12,6 @@ export function Sidebar({ activePage, onNavigate, collapsed, onToggleCollapse }:
   const navItems = [
     { id: 'home',    label: '首页',  color: '#b8a088' },
     { id: 'launch',  label: '启动',  color: 'var(--nav-launch)' },
-    { id: 'mods',    label: '模组',  color: 'var(--nav-mods)' },
-    { id: 'news',    label: '新闻',  color: 'var(--nav-news)' },
     { id: 'settings',label: '设置',  color: 'var(--nav-settings)' },
   ];
 

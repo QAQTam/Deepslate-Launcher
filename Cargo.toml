@@ -2,7 +2,7 @@
 resolver = "2"
 members = ["core", "gui-iced", "src-tauri"]
 
-# core: 框架无关的业务逻辑（下载/认证/启动/配置/备份/新闻/mod 管理）
+# core: 框架无关的业务逻辑（下载/认证/启动/配置/备份）
 # src-tauri: Tauri 壳，只做 IPC 命令与事件的桥接
 # gui-iced: iced 前端，直接消费 core（计划逐步取代 Tauri 前端）
 
