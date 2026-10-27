@@ -9,9 +9,9 @@ use std::io::{BufRead, BufReader};
 use std::time::{Duration, Instant};
 
 use iced::{
-    Element, Font, Length, Size, Subscription, Task,
     futures::{SinkExt, Stream},
-    widget::{Space, button, column, container, row, rule, scrollable, text},
+    widget::{button, column, container, row, rule, scrollable, text, Space},
+    Element, Font, Length, Size, Subscription, Task,
 };
 use tokio::sync::mpsc;
 
@@ -40,7 +40,13 @@ enum Msg {
 pub fn run(dark: bool) -> iced::Result {
     iced::application(boot(dark), update, view)
         .title("深板岩启动器 — 游戏日志")
-        .theme(move |_state: &LogWindow| if dark { style::theme_dark() } else { style::theme_light() })
+        .theme(move |_state: &LogWindow| {
+            if dark {
+                style::theme_dark()
+            } else {
+                style::theme_light()
+            }
+        })
         .subscription(subscribe)
         .window_size(Size::new(840.0, 520.0))
         .run()
@@ -104,29 +110,41 @@ fn subscribe(state: &LogWindow) -> Subscription<Msg> {
 
 /// 逐行读取本进程 stdin，解析 "O\t行" / "E\t行" 前缀
 fn listen_stdin() -> impl Stream<Item = Msg> {
-    iced::stream::channel(256, |mut output: iced::futures::channel::mpsc::Sender<Msg>| async move {
-        let (tx, mut rx) = mpsc::channel::<Msg>(1024);
-        std::thread::spawn(move || {
-            let stdin = std::io::stdin();
-            for line in BufReader::new(stdin.lock()).lines() {
-                let Ok(line) = line else { break };
-                let msg = if let Some(content) = line.strip_prefix("E\t") {
-                    Msg::Line { is_stderr: true, line: content.to_string() }
-                } else if let Some(content) = line.strip_prefix("O\t") {
-                    Msg::Line { is_stderr: false, line: content.to_string() }
-                } else {
-                    Msg::Line { is_stderr: false, line }
-                };
-                if tx.blocking_send(msg).is_err() {
-                    return;
+    iced::stream::channel(
+        256,
+        |mut output: iced::futures::channel::mpsc::Sender<Msg>| async move {
+            let (tx, mut rx) = mpsc::channel::<Msg>(1024);
+            std::thread::spawn(move || {
+                let stdin = std::io::stdin();
+                for line in BufReader::new(stdin.lock()).lines() {
+                    let Ok(line) = line else { break };
+                    let msg = if let Some(content) = line.strip_prefix("E\t") {
+                        Msg::Line {
+                            is_stderr: true,
+                            line: content.to_string(),
+                        }
+                    } else if let Some(content) = line.strip_prefix("O\t") {
+                        Msg::Line {
+                            is_stderr: false,
+                            line: content.to_string(),
+                        }
+                    } else {
+                        Msg::Line {
+                            is_stderr: false,
+                            line,
+                        }
+                    };
+                    if tx.blocking_send(msg).is_err() {
+                        return;
+                    }
                 }
+                let _ = tx.blocking_send(Msg::Ended);
+            });
+            while let Some(msg) = rx.recv().await {
+                let _ = output.send(msg).await;
             }
-            let _ = tx.blocking_send(Msg::Ended);
-        });
-        while let Some(msg) = rx.recv().await {
-            let _ = output.send(msg).await;
-        }
-    })
+        },
+    )
 }
 
 fn view(state: &LogWindow) -> Element<'_, Msg> {

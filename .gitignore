@@ -22,3 +22,9 @@ ehthumbs.db
 *.tmp
 *.temp
 .deepx/
+.codegraph/
+
+# Fabric Bridge build output
+/bridge/.gradle/
+/bridge/build/
+/bridge/run/

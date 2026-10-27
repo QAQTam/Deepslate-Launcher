@@ -1,3 +1,5 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use ring::rand::SecureRandom;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -21,7 +23,81 @@ const MC_PROFILE_URL: &str = "https://api.minecraftservices.com/minecraft/profil
 // Minecraft Launcher 公共客户端 ID
 const CLIENT_ID: &str = "00000000402b5328";
 const REDIRECT_URI: &str = "https://login.live.com/oauth20_desktop.srf";
-const SCOPE: &str = "service%3A%3Auser.auth.xboxlive.com%3A%3AMBI_SSL";
+const SCOPE_RAW: &str = "service::user.auth.xboxlive.com::MBI_SSL";
+
+#[derive(Clone)]
+pub struct AuthSession {
+    state: String,
+    verifier: String,
+}
+
+impl AuthSession {
+    pub fn new() -> Result<Self, String> {
+        let rng = ring::rand::SystemRandom::new();
+        let mut bytes = [0u8; 64];
+        rng.fill(&mut bytes)
+            .map_err(|_| "无法生成安全随机数".to_string())?;
+        Ok(Self {
+            state: URL_SAFE_NO_PAD.encode(&bytes[..32]),
+            verifier: URL_SAFE_NO_PAD.encode(&bytes[32..]),
+        })
+    }
+
+    pub fn authorization_url(&self) -> String {
+        let mut url = url::Url::parse(LOGIN_AUTHORIZE_URL).expect("static authorization URL");
+        let challenge = URL_SAFE_NO_PAD
+            .encode(ring::digest::digest(&ring::digest::SHA256, self.verifier.as_bytes()).as_ref());
+        url.query_pairs_mut()
+            .append_pair("client_id", CLIENT_ID)
+            .append_pair("response_type", "code")
+            .append_pair("scope", SCOPE_RAW)
+            .append_pair("redirect_uri", REDIRECT_URI)
+            .append_pair("state", &self.state)
+            .append_pair("code_challenge", &challenge)
+            .append_pair("code_challenge_method", "S256");
+        url.into()
+    }
+
+    pub fn callback_code(&self, callback: &str) -> Result<String, String> {
+        let parsed =
+            url::Url::parse(callback.trim()).map_err(|_| "请输入完整回调 URL".to_string())?;
+        let expected = url::Url::parse(REDIRECT_URI).expect("static redirect URL");
+        if parsed.scheme() != expected.scheme()
+            || parsed.host_str() != expected.host_str()
+            || parsed.port_or_known_default() != expected.port_or_known_default()
+            || parsed.path() != expected.path()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err("回调地址不匹配".to_string());
+        }
+        let mut state = None;
+        let mut code = None;
+        for (key, value) in parsed.query_pairs() {
+            match key.as_ref() {
+                "state" if state.is_none() => state = Some(value.into_owned()),
+                "code" if code.is_none() => code = Some(value.into_owned()),
+                "state" | "code" => return Err("回调参数重复".to_string()),
+                _ => {}
+            }
+        }
+        if state.as_deref() != Some(self.state.as_str()) {
+            return Err("回调 state 不匹配".to_string());
+        }
+        code.filter(|s| !s.is_empty())
+            .ok_or_else(|| "回调缺少授权码".to_string())
+    }
+
+    pub async fn login(
+        &self,
+        callback: &str,
+        events: &mpsc::Sender<CoreEvent>,
+    ) -> Result<OnlineProfile, String> {
+        let code = self.callback_code(callback)?;
+        login_with_code(&code, &self.verifier, events).await
+    }
+}
 
 // -------------------- 数据结构 --------------------
 
@@ -30,8 +106,8 @@ pub struct MsTokenResponse {
     pub token_type: String,
     pub expires_in: u32,
     pub access_token: String,
-    pub refresh_token: String,
-    pub user_id: String,
+    pub refresh_token: Option<String>,
+    pub user_id: Option<String>,
     pub foci: Option<String>,
 }
 
@@ -107,7 +183,11 @@ pub struct LoginProgress {
 // -------------------- 核心认证流程 --------------------
 
 /// 使用授权码完成 Microsoft 登录：MS token → Xbox → XSTS → Minecraft → 档案
-pub async fn login_with_code(code: &str, events: &mpsc::Sender<CoreEvent>) -> Result<OnlineProfile, String> {
+async fn login_with_code(
+    code: &str,
+    verifier: &str,
+    events: &mpsc::Sender<CoreEvent>,
+) -> Result<OnlineProfile, String> {
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .timeout(std::time::Duration::from_secs(30))
@@ -116,15 +196,59 @@ pub async fn login_with_code(code: &str, events: &mpsc::Sender<CoreEvent>) -> Re
 
     // Step 1: 用 code 换取 MS token
     emit_progress(events, "exchanging_ms_token", "正在验证登录...").await;
-    let ms_token = exchange_code_for_token(&client, code).await?;
+    let ms_token = exchange_code_for_token(&client, code, verifier).await?;
 
+    finish_login(&client, ms_token, events).await
+}
+
+pub async fn refresh_login(
+    refresh_token: &str,
+    events: &mpsc::Sender<CoreEvent>,
+) -> Result<OnlineProfile, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    emit_progress(events, "refreshing", "正在刷新 Microsoft 登录...").await;
+    let response = client
+        .post(LOGIN_TOKEN_URL)
+        .form(&[
+            ("client_id", CLIENT_ID),
+            ("refresh_token", refresh_token),
+            ("grant_type", "refresh_token"),
+            ("scope", SCOPE_RAW),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("刷新登录请求失败: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "刷新 Microsoft 登录失败 ({})，请重新登录",
+            response.status()
+        ));
+    }
+    let mut token = response
+        .json::<MsTokenResponse>()
+        .await
+        .map_err(|e| format!("解析刷新响应失败: {e}"))?;
+    if token.refresh_token.as_deref().map_or(true, str::is_empty) {
+        token.refresh_token = Some(refresh_token.to_string());
+    }
+    finish_login(&client, token, events).await
+}
+
+async fn finish_login(
+    client: &reqwest::Client,
+    ms_token: MsTokenResponse,
+    events: &mpsc::Sender<CoreEvent>,
+) -> Result<OnlineProfile, String> {
     // Step 2: Xbox 认证
     emit_progress(events, "exchanging_xbox", "正在连接 Xbox 服务...").await;
-    let xbox_token = authenticate_xbox(&client, &ms_token.access_token).await?;
+    let xbox_token = authenticate_xbox(client, &ms_token.access_token).await?;
 
     // Step 3: XSTS 认证
     emit_progress(events, "exchanging_xsts", "正在验证 Xbox 权限...").await;
-    let xsts_token = exchange_xsts(&client, &xbox_token.Token).await?;
+    let xsts_token = exchange_xsts(client, &xbox_token.Token).await?;
 
     // Step 4: Minecraft token
     emit_progress(events, "exchanging_minecraft", "正在连接 Minecraft 服务...").await;
@@ -135,11 +259,11 @@ pub async fn login_with_code(code: &str, events: &mpsc::Sender<CoreEvent>) -> Re
         .and_then(|xui| xui.first())
         .map(|c| c.uhs.as_str())
         .ok_or("未找到 Xbox 用户标识")?;
-    let mc_token = login_minecraft(&client, uhs, &xsts_token.Token).await?;
+    let mc_token = login_minecraft(client, uhs, &xsts_token.Token).await?;
 
     // Step 5: 获取 Minecraft 档案
     emit_progress(events, "fetching_profile", "正在获取玩家档案...").await;
-    let mc_profile = get_minecraft_profile(&client, &mc_token.access_token).await?;
+    let mc_profile = get_minecraft_profile(client, &mc_token.access_token).await?;
 
     let expires_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -151,35 +275,28 @@ pub async fn login_with_code(code: &str, events: &mpsc::Sender<CoreEvent>) -> Re
         username: mc_profile.name,
         uuid: mc_profile.id,
         access_token: mc_token.access_token,
-        refresh_token: ms_token.refresh_token,
+        refresh_token: ms_token
+            .refresh_token
+            .filter(|s| !s.is_empty())
+            .ok_or("Microsoft 未返回可用的刷新凭据，请重新登录")?,
         expires_at,
     };
 
-    emit_progress(events, "completed", &format!("登录成功: {}", profile.username)).await;
-    Ok(profile)
-}
-
-// -------------------- 授权 URL --------------------
-
-pub fn get_auth_url() -> String {
-    construct_auth_url()
-}
-
-fn construct_auth_url() -> String {
-    let redirect_uri_encoded = url::form_urlencoded::byte_serialize(REDIRECT_URI.as_bytes()).collect::<String>();
-
-    format!(
-        "{}?client_id={}&response_type=code&scope={}&redirect_uri={}",
-        LOGIN_AUTHORIZE_URL,
-        CLIENT_ID,
-        SCOPE,
-        redirect_uri_encoded
+    emit_progress(
+        events,
+        "completed",
+        &format!("登录成功: {}", profile.username),
     )
+    .await;
+    Ok(profile)
 }
 
 // -------------------- 认证步骤 --------------------
 
-async fn authenticate_xbox(client: &reqwest::Client, ms_access_token: &str) -> Result<XboxAuthResponse, String> {
+async fn authenticate_xbox(
+    client: &reqwest::Client,
+    ms_access_token: &str,
+) -> Result<XboxAuthResponse, String> {
     let body = serde_json::json!({
         "Properties": {
             "AuthMethod": "RPS",
@@ -202,19 +319,25 @@ async fn authenticate_xbox(client: &reqwest::Client, ms_access_token: &str) -> R
         .map_err(|e| format!("Xbox 认证请求失败: {}", e))?;
 
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取响应失败: {}", e))?;
 
     if !status.is_success() {
         return Err(format!("Xbox 认证失败 ({}): {}", status, text));
     }
 
-    let xbox_resp: XboxAuthResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("解析 Xbox 响应失败: {}", e))?;
+    let xbox_resp: XboxAuthResponse =
+        serde_json::from_str(&text).map_err(|e| format!("解析 Xbox 响应失败: {}", e))?;
 
     Ok(xbox_resp)
 }
 
-async fn exchange_xsts(client: &reqwest::Client, xbox_token: &str) -> Result<XboxStsResponse, String> {
+async fn exchange_xsts(
+    client: &reqwest::Client,
+    xbox_token: &str,
+) -> Result<XboxStsResponse, String> {
     let body = serde_json::json!({
         "Properties": {
             "SandboxId": "RETAIL",
@@ -248,7 +371,11 @@ async fn exchange_xsts(client: &reqwest::Client, xbox_token: &str) -> Result<Xbo
     Ok(xsts_resp)
 }
 
-async fn login_minecraft(client: &reqwest::Client, uhs: &str, xsts_token: &str) -> Result<McTokenResponse, String> {
+async fn login_minecraft(
+    client: &reqwest::Client,
+    uhs: &str,
+    xsts_token: &str,
+) -> Result<McTokenResponse, String> {
     let body = serde_json::json!({
         "identityToken": format!("XBL3.0 x={};{}", uhs, xsts_token)
     });
@@ -277,7 +404,10 @@ async fn login_minecraft(client: &reqwest::Client, uhs: &str, xsts_token: &str) 
     Ok(mc_resp)
 }
 
-async fn get_minecraft_profile(client: &reqwest::Client, access_token: &str) -> Result<McProfile, String> {
+async fn get_minecraft_profile(
+    client: &reqwest::Client,
+    access_token: &str,
+) -> Result<McProfile, String> {
     let resp = client
         .get(MC_PROFILE_URL)
         .header("Authorization", format!("Bearer {}", access_token))
@@ -303,20 +433,21 @@ async fn get_minecraft_profile(client: &reqwest::Client, access_token: &str) -> 
     Ok(profile)
 }
 
-async fn exchange_code_for_token(client: &reqwest::Client, code: &str) -> Result<MsTokenResponse, String> {
-    let redirect_uri_encoded = url::form_urlencoded::byte_serialize(REDIRECT_URI.as_bytes()).collect::<String>();
-    let body = format!(
-        "client_id={}&code={}&grant_type=authorization_code&redirect_uri={}&scope={}",
-        CLIENT_ID,
-        code,
-        redirect_uri_encoded,
-        SCOPE
-    );
-
+async fn exchange_code_for_token(
+    client: &reqwest::Client,
+    code: &str,
+    verifier: &str,
+) -> Result<MsTokenResponse, String> {
     let resp = client
         .post(LOGIN_TOKEN_URL)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(body)
+        .form(&[
+            ("client_id", CLIENT_ID),
+            ("code", code),
+            ("grant_type", "authorization_code"),
+            ("redirect_uri", REDIRECT_URI),
+            ("scope", SCOPE_RAW),
+            ("code_verifier", verifier),
+        ])
         .send()
         .await
         .map_err(|e| format!("获取 MS Token 失败: {}", e))?;
@@ -341,4 +472,38 @@ async fn emit_progress(events: &mpsc::Sender<CoreEvent>, step: &str, message: &s
         message: message.to_string(),
     };
     let _ = events.send(CoreEvent::AuthProgress(progress)).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oauth_session_binds_callback_and_pkce() {
+        let session = AuthSession::new().unwrap();
+        let url = url::Url::parse(&session.authorization_url()).unwrap();
+        let params: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(params.get("state"), Some(&session.state));
+        assert_eq!(
+            params.get("code_challenge_method").map(String::as_str),
+            Some("S256")
+        );
+        let callback = format!("{}?code=a%2Bb&state={}", REDIRECT_URI, session.state);
+        assert_eq!(session.callback_code(&callback).unwrap(), "a+b");
+        assert!(session
+            .callback_code(&callback.replace(&session.state, "wrong"))
+            .is_err());
+        assert!(session
+            .callback_code(&callback.replace("login.live.com", "evil.example"))
+            .is_err());
+        assert!(session.callback_code("raw-code").is_err());
+    }
+
+    #[test]
+    fn oauth_response_optional_fields_are_not_required() {
+        let parsed: MsTokenResponse =
+            serde_json::from_str(r#"{"access_token":"a","expires_in":3600,"token_type":"bearer"}"#)
+                .unwrap();
+        assert!(parsed.refresh_token.is_none());
+    }
 }

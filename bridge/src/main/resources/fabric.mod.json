@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "deepslate-bridge",
+  "version": "0.2.0",
+  "name": "Deepslate Bridge",
+  "environment": "client",
+  "entrypoints": { "client": ["org.deepslate.bridge.BridgeClient"] },
+  "mixins": [{ "config": "deepslate-bridge.mixins.json", "environment": "client" }],
+  "depends": { "fabricloader": ">=0.20.1", "minecraft": "26.3", "java": ">=25", "fabric-api": ">=0.165.0+26.3" }
+}

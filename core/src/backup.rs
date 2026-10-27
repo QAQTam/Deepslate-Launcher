@@ -56,13 +56,15 @@ pub async fn ensure_saves_symlink(config: &AppConfig, version: &str) -> Result<(
     }
 
     #[cfg(windows)]
-    std::os::windows::fs::symlink_dir(&saves_target, &saves_link)
-        .map_err(|e| e.to_string())?;
+    std::os::windows::fs::symlink_dir(&saves_target, &saves_link).map_err(|e| e.to_string())?;
     #[cfg(not(windows))]
-    std::os::unix::fs::symlink(&saves_target, &saves_link)
-        .map_err(|e| e.to_string())?;
+    std::os::unix::fs::symlink(&saves_target, &saves_link).map_err(|e| e.to_string())?;
 
-    println!("已建立 saves 隔离链接: {} -> {:?}", saves_link.display(), saves_target.display());
+    println!(
+        "已建立 saves 隔离链接: {} -> {:?}",
+        saves_link.display(),
+        saves_target.display()
+    );
     Ok(())
 }
 
@@ -267,7 +269,13 @@ pub fn delete(version: &str, backup_name: &str) -> Result<(), String> {
 /// 版本名转文件名安全形式（用于临时目录命名）
 fn sanitize(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 

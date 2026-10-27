@@ -23,7 +23,9 @@ pub fn resolve_game_dir(config: &AppConfig) -> PathBuf {
 /// 获取版本的实际目录（version_isolation=true 时为 root_dir/versions/{version}/）
 pub fn get_version_root(config: &AppConfig, version: &str) -> PathBuf {
     if config.version_isolation {
-        PathBuf::from(&config.root_dir).join("versions").join(version)
+        PathBuf::from(&config.root_dir)
+            .join("versions")
+            .join(version)
     } else {
         resolve_game_dir(config)
     }
@@ -43,6 +45,100 @@ pub struct AppConfig {
     /// 启动游戏时弹出独立日志窗口（子进程渲染游戏 stdout/stderr）
     #[serde(default)]
     pub log_window: bool,
+    /// 增强体验仅在完整的受管会话实现就绪后由启动入口启用。
+    #[serde(default)]
+    pub enhanced_experience: bool,
+    /// 标题界面左下角显示启动器名称（vanilla 有效；Fabric 受 Knot 限制暂不生效）
+    #[serde(default = "default_true")]
+    pub brand_title: bool,
+    #[serde(default = "default_brand_text")]
+    pub brand_text: String,
+    /// 首次进入实例时写入中文 / 跳过辅助功能引导（只补缺失键）
+    #[serde(default = "default_true")]
+    pub apply_game_defaults: bool,
+    /// 最近快速加入的服务器地址
+    #[serde(default)]
+    pub recent_servers: Vec<String>,
+    /// 增强体验的命名服务器收藏（与最近连接分开保存）。
+    #[serde(default)]
+    pub saved_servers: Vec<SavedServer>,
+    /// 增强实例启动时写入的语言代码。
+    #[serde(default = "default_enhanced_language")]
+    pub enhanced_language: String,
+    /// 增强实例 GC 策略：default 或 zgc。
+    #[serde(default = "default_enhanced_gc")]
+    pub enhanced_gc: String,
+    /// 增强实例最大堆大小，0 表示由 JVM 自动决定。
+    #[serde(default)]
+    pub enhanced_max_memory_mb: u32,
+    /// Java 25+ 的紧凑对象头选项。
+    #[serde(default)]
+    pub enhanced_compact_object_headers: bool,
+    /// 本地服务端端口
+    #[serde(default = "default_server_port")]
+    pub server_port: u16,
+    #[serde(default = "default_server_memory")]
+    pub server_memory_mb: u32,
+    #[serde(default = "default_true")]
+    pub server_online_mode: bool,
+    /// 兼容旧配置；实际授权凭据是 `<root>/eula.txt`（见 `eula` 模块）。
+    #[serde(default)]
+    pub server_eula_accepted: bool,
+    // 高级启动开关（26.3 参数）
+    #[serde(default)]
+    pub disable_multiplayer: bool,
+    #[serde(default)]
+    pub disable_chat: bool,
+    #[serde(default)]
+    pub fullscreen: bool,
+    #[serde(default = "default_window_width")]
+    pub window_width: u32,
+    #[serde(default = "default_window_height")]
+    pub window_height: u32,
+    #[serde(default = "default_graphics_backend")]
+    pub graphics_backend: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SavedServer {
+    pub name: String,
+    pub address: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_brand_text() -> String {
+    "Deepslate".to_string()
+}
+
+fn default_server_port() -> u16 {
+    25565
+}
+
+fn default_server_memory() -> u32 {
+    2048
+}
+
+fn default_window_width() -> u32 {
+    1280
+}
+
+fn default_window_height() -> u32 {
+    720
+}
+
+fn default_graphics_backend() -> String {
+    "default".to_string()
+}
+
+fn default_enhanced_language() -> String {
+    "zh_cn".to_string()
+}
+
+fn default_enhanced_gc() -> String {
+    "default".to_string()
 }
 
 impl Default for AppConfig {
@@ -60,6 +156,26 @@ impl Default for AppConfig {
             first_launch: true,
             ui_mode: "dark".to_string(),
             log_window: false,
+            enhanced_experience: false,
+            brand_title: true,
+            brand_text: default_brand_text(),
+            apply_game_defaults: true,
+            recent_servers: Vec::new(),
+            saved_servers: Vec::new(),
+            enhanced_language: default_enhanced_language(),
+            enhanced_gc: default_enhanced_gc(),
+            enhanced_max_memory_mb: 0,
+            enhanced_compact_object_headers: false,
+            server_port: default_server_port(),
+            server_memory_mb: default_server_memory(),
+            server_online_mode: true,
+            server_eula_accepted: false,
+            disable_multiplayer: false,
+            disable_chat: false,
+            fullscreen: false,
+            window_width: default_window_width(),
+            window_height: default_window_height(),
+            graphics_backend: default_graphics_backend(),
         }
     }
 }
@@ -100,12 +216,12 @@ pub fn reset_to_default() -> Result<(), String> {
 /// 重置所有配置（删除 config.json 和 profiles.json，重新进入首次配置）
 pub fn reset_all() -> Result<(), String> {
     let config_json = config_path()?.join("config.json");
-    if config_json.exists() {
-        fs::remove_file(&config_json).map_err(|e| e.to_string())?;
-    }
     let profiles_json = crate::profiles::path()?;
     if profiles_json.exists() {
         fs::remove_file(&profiles_json).map_err(|e| e.to_string())?;
+    }
+    if config_json.exists() {
+        fs::remove_file(&config_json).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -125,4 +241,20 @@ pub fn clear_dir_contents(path: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod security_tests {
+    #[test]
+    fn new_server_defaults_to_online_mode() {
+        assert!(super::AppConfig::default().server_online_mode);
+    }
+
+    #[test]
+    fn old_configs_default_enhanced_experience_to_disabled() {
+        let mut value = serde_json::to_value(super::AppConfig::default()).unwrap();
+        value.as_object_mut().unwrap().remove("enhanced_experience");
+        let config: super::AppConfig = serde_json::from_value(value).unwrap();
+        assert!(!config.enhanced_experience);
+    }
 }

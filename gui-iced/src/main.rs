@@ -4,14 +4,18 @@
 //! 长任务（下载/启动）通过 core 的 CoreEvent 事件总线回流（见 `events` 模块）。
 //! 页面切换/卡片入场动画基于 iced 内置 Animation + Float 变换。
 
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use iced::{
-    Element, Length, Size, Subscription, Task, Vector,
     animation::Animation,
     futures::{SinkExt, Stream},
-    widget::{Space, button, checkbox, column, container, float, pick_list, progress_bar, row, rule, scrollable, text, text_input},
+    widget::{
+        button, checkbox, container, float, opaque, pick_list, progress_bar, row, rule, scrollable,
+        stack, text, text_input, Space,
+    },
+    Element, Length, Size, Subscription, Task, Vector,
 };
 use tokio::sync::{broadcast, mpsc};
 
@@ -58,6 +62,10 @@ fn core_event_sender() -> mpsc::Sender<CoreEvent> {
 enum Page {
     Home,
     Launch,
+    Maps,
+    Server,
+    Mods,
+    Advanced,
     Settings,
 }
 
@@ -66,6 +74,10 @@ impl Page {
         match self {
             Page::Home => "首页",
             Page::Launch => "启动",
+            Page::Maps => "世界",
+            Page::Server => "服务器",
+            Page::Mods => "模组",
+            Page::Advanced => "高级",
             Page::Settings => "设置",
         }
     }
@@ -74,16 +86,14 @@ impl Page {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VersionTab {
     Release,
-    Snapshot,
-    Old,
+    Installed,
 }
 
 impl VersionTab {
     fn label(self) -> &'static str {
         match self {
             VersionTab::Release => "正式版",
-            VersionTab::Snapshot => "测试版",
-            VersionTab::Old => "历史版",
+            VersionTab::Installed => "已安装",
         }
     }
 }
@@ -107,6 +117,10 @@ struct App {
     progress: Option<launcher::download::DownloadProgress>,
     launching: bool,
     game_running: bool,
+    active_managed: bool,
+    enhanced_started_at: Option<Instant>,
+    enhanced_startup_duration: Option<Duration>,
+    enhanced_phase: Option<(String, Instant)>,
     // 亮/暗主题（持久化在 config.ui_mode: "light"/"dark"）
     dark_mode: bool,
     // 页面入场动画（0 → 1），now 为最近一次时钟，驱动插值
@@ -115,26 +129,115 @@ struct App {
     // Microsoft 登录（浏览器授权 + 粘贴回调 URL）
     ms_code_input: String,
     ms_logging_in: bool,
-    // 设置页：存档备份（针对当前选中版本）
-    backups: Vec<String>,
-    pending_restore: Option<String>,
-    pending_delete: Option<String>,
+    ms_auth_session: Option<launcher::auth::AuthSession>,
     // 设置页危险区二次确认
     confirm_reset: bool,
+    confirm_empty_trash: bool,
+    root_changed: bool,
     // 独立日志窗口子进程的写入端（None = 未启用或窗口已关闭）
     log_writer: Option<mpsc::Sender<String>>,
+    // 本地已安装版本（原版 + Fabric 等加载器）
+    local_versions: Vec<launcher::versions::LocalVersion>,
+    /// 「已安装」tab 的 VersionInfo 投影（只在扫描后重算）
+    local_choices: Vec<launcher::download::VersionInfo>,
+    /// 全部正式版缓存（普通下载和 Fabric 安装共用）
+    releases: Vec<launcher::download::VersionInfo>,
+    // Fabric 安装
+    fabric_game: Option<launcher::download::VersionInfo>,
+    fabric_loaders: Vec<launcher::fabric::LoaderVersion>,
+    fabric_loader: Option<launcher::fabric::LoaderVersion>,
+    fabric_loading: bool,
+    fabric_installing: bool,
+    /// 安装完成后待选中的版本 id
+    pending_select: Option<String>,
+    // 地图库（全局，不按版本拆分）
+    saves: Vec<launcher::maps::MapSummary>,
+    pending_creations: Vec<launcher::maps::PendingCreation>,
+    map_import_path: String,
+    pending_map_restore: Option<String>,
+    active_map: Option<String>,
+    renaming_save: Option<String>,
+    save_name_input: String,
+    pending_save_delete: Option<String>,
+    pending_world_enter: Option<String>,
+    // 快速加入服务器
+    server_address: String,
+    server_profile_name: String,
+    server_ping_status: HashMap<String, String>,
+    // 本地服务端
+    server_running: bool,
+    server_ready: bool,
+    server_busy: bool,
+    server_logs: Vec<String>,
+    server_port_input: String,
+    pending_server_join: bool,
+    // 新建世界
+    new_world_name: String,
+    new_world_seed: String,
+    new_world_flat: bool,
+    new_world_cheats: bool,
+    new_world_gamemode: String,
+    new_world_difficulty: String,
+    new_world_keep_inventory: bool,
+    new_world_mob_griefing: bool,
+    new_world_daylight_cycle: bool,
+    new_world_weather_cycle: bool,
+    new_world_hostile_mobs: bool,
+    new_world_pvp: bool,
+    new_world_creating: bool,
+    // 高级启动
+    window_width_input: String,
+    window_height_input: String,
+    // EULA：首次启动前的阻塞式授权（主窗口模态，不复用日志窗口）
+    eula_accepted: bool,
+    eula_sha1: Option<String>,
+    eula_checking: bool,
+    eula_required: bool,
+    eula_text: Option<String>,
+    eula_source: Option<String>,
+    eula_warning: Option<String>,
+    eula_loading: bool,
+    eula_error: Option<String>,
+    eula_scrolled_to_bottom: bool,
+    eula_checked: bool,
+    pending_action: Option<PendingAction>,
+    // 模组
+    mods: Vec<launcher::mods::ModInfo>,
+    mods_version: Option<String>,
+    pending_mod_delete: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum PendingAction {
+    None,
+    Launch(Option<launcher::launch::QuickPlayTarget>),
+    ServerInstall,
+    ServerStart,
+    CreateWorld,
 }
 
 impl App {
     fn boot() -> (Self, Task<Message>) {
         let config = launcher::config::load().unwrap_or_default();
+        // 兼容旧版本：以前把“同意”只存在 config.json 里；现在以
+        // <root>/eula.txt 为唯一凭据，启动时把旧状态迁移成标记文件。
+        let mut eula_accepted = launcher::eula::is_accepted(&config);
+        if !eula_accepted && config.server_eula_accepted {
+            eula_accepted = launcher::eula::accept(&config).is_ok();
+        }
+        let eula_sha1 = launcher::eula::accepted_sha1(&config);
+        let game_dir = launcher::config::resolve_game_dir(&config);
+        let server_address = config.recent_servers.first().cloned().unwrap_or_default();
+        let server_port_input = config.server_port.to_string();
+        let window_width_input = config.window_width.to_string();
+        let window_height_input = config.window_height.to_string();
         let now = Instant::now();
         // 启动即播放入场动画
         let mut page_anim = Animation::new(false)
             .duration(Duration::from_millis(400))
             .easing(iced::animation::Easing::EaseOutCubic);
         page_anim.go_mut(true, now);
-        let app = Self {
+        let mut app = Self {
             page: Page::Launch,
             status: format!("根目录: {}", config.root_dir),
             dark_mode: config.ui_mode != "light",
@@ -154,42 +257,120 @@ impl App {
             progress: None,
             launching: false,
             game_running: false,
+            active_managed: false,
+            enhanced_started_at: None,
+            enhanced_startup_duration: None,
+            enhanced_phase: None,
             ms_code_input: String::new(),
             ms_logging_in: false,
-            backups: Vec::new(),
-            pending_restore: None,
-            pending_delete: None,
+            ms_auth_session: None,
             confirm_reset: false,
+            confirm_empty_trash: false,
+            root_changed: false,
             log_writer: None,
+            local_versions: Vec::new(),
+            local_choices: Vec::new(),
+            releases: Vec::new(),
+            fabric_game: None,
+            fabric_loaders: Vec::new(),
+            fabric_loader: None,
+            fabric_loading: false,
+            fabric_installing: false,
+            pending_select: None,
+            saves: Vec::new(),
+            pending_creations: Vec::new(),
+            map_import_path: String::new(),
+            pending_map_restore: None,
+            active_map: None,
+            renaming_save: None,
+            save_name_input: String::new(),
+            pending_save_delete: None,
+            pending_world_enter: None,
+            server_address,
+            server_profile_name: String::new(),
+            server_ping_status: HashMap::new(),
+            server_running: false,
+            server_ready: false,
+            server_busy: false,
+            server_logs: Vec::new(),
+            server_port_input,
+            pending_server_join: false,
+            new_world_name: "新的世界".to_string(),
+            new_world_seed: String::new(),
+            new_world_flat: false,
+            new_world_cheats: false,
+            new_world_gamemode: "survival".to_string(),
+            new_world_difficulty: "normal".to_string(),
+            new_world_keep_inventory: false,
+            new_world_mob_griefing: true,
+            new_world_daylight_cycle: true,
+            new_world_weather_cycle: true,
+            new_world_hostile_mobs: true,
+            new_world_pvp: true,
+            new_world_creating: false,
+            window_width_input,
+            window_height_input,
+            eula_accepted,
+            eula_sha1,
+            eula_checking: false,
+            eula_required: false,
+            eula_text: None,
+            eula_source: None,
+            eula_warning: None,
+            eula_loading: false,
+            eula_error: None,
+            eula_scrolled_to_bottom: false,
+            eula_checked: false,
+            pending_action: None,
+            mods: Vec::new(),
+            mods_version: None,
+            pending_mod_delete: None,
         };
 
+        let cleanup_config = app.config.clone();
+        let cleanup = Task::perform(
+            async move { launcher::worldgen::cleanup_stale(&cleanup_config) },
+            Message::StaleCleanupDone,
+        );
+        let eula_check = if app.eula_accepted {
+            app.eula_checking = true;
+            let config = app.config.clone();
+            Task::perform(
+                async move { launcher::eula::check_for_update(&config).await },
+                Message::EulaUpdateChecked,
+            )
+        } else {
+            Task::none()
+        };
         let load = Task::batch([
             Task::perform(launcher::download::get_versions(), Message::VersionsLoaded),
-            Task::perform(async { launcher::profiles::load() }, Message::ProfilesLoaded),
+            Task::perform(
+                async { launcher::profiles::load() },
+                Message::ProfilesLoaded,
+            ),
             Task::perform(async { scan_java_async().await }, Message::JavaLoaded),
+            load_local_versions(game_dir),
+            cleanup,
+            load_saves_task(&mut app),
+            eula_check,
         ]);
 
         (app, load)
     }
 
-    /// 重算当前 tab 的版本缓存，并把选择默认到该分类最新一个（列表为空则保留原选择）。
+    /// 重算当前 tab 的版本缓存：保留仍在列表中的当前选择，否则退回第一个。
     /// 仅在版本列表加载 / tab 切换时调用。
     fn refilter(&mut self) {
-        self.filtered = self
-            .versions
-            .iter()
-            .filter(|v| match self.version_tab {
-                VersionTab::Release => v.kind == "release",
-                VersionTab::Snapshot => v.kind == "snapshot",
-                VersionTab::Old => v.kind == "old_alpha" || v.kind == "old_beta",
-            })
-            .cloned()
-            .collect();
-        self.selected_version = self
-            .filtered
-            .first()
-            .cloned()
-            .or_else(|| self.selected_version.take());
+        self.filtered = match self.version_tab {
+            VersionTab::Installed => self.local_choices.clone(),
+            VersionTab::Release => self.releases.clone(),
+        };
+        // 当前选择仍在列表里就保留，否则退回列表第一个
+        let keep = self
+            .selected_version
+            .as_ref()
+            .and_then(|selected| self.filtered.iter().find(|v| v.id == selected.id).cloned());
+        self.selected_version = keep.or_else(|| self.filtered.first().cloned());
     }
 }
 
@@ -204,7 +385,9 @@ enum Message {
     ToggleDarkMode(bool),
     /// 启动游戏时打开独立日志窗口
     ToggleLogWindow(bool),
+    ToggleEnhancedExperience(bool),
     VersionsLoaded(Result<Vec<launcher::download::VersionInfo>, String>),
+    LocalVersionsLoaded(std::path::PathBuf, Vec<launcher::versions::LocalVersion>),
     ProfilesLoaded(Result<ProfileStore, String>),
     JavaLoaded(Vec<launcher::launch::JavaInfo>),
     TabChanged(VersionTab),
@@ -229,49 +412,166 @@ enum Message {
     MsLoginFinished(Result<UserProfile, String>),
     // 设置
     RootDirChanged(String),
-    ToggleVersionIsolation(bool),
-    ToggleSavesIsolation(bool),
     ConcurrencySelected(usize),
     SaveSettings,
     SettingsSaved(Result<(), String>),
     ResetAllPressed,
     ResetAllDone(Result<(), String>),
-    // 存档备份
-    BackupCreatePressed,
-    BackupCreated(Result<String, String>),
-    BackupLoad(String),
-    BackupsLoaded(Result<Vec<String>, String>),
-    BackupRestorePressed(String),
-    BackupRestored(Result<(), String>),
-    BackupDeletePressed(String),
-    BackupDeleted(Result<(), String>),
+    // Fabric 安装
+    FabricGameSelected(launcher::download::VersionInfo),
+    FabricLoadersLoaded(Result<Vec<launcher::fabric::LoaderVersion>, String>),
+    FabricLoaderSelected(launcher::fabric::LoaderVersion),
+    FabricInstallPressed,
+    FabricInstalled(Result<launcher::fabric::InstallResult, String>),
+    RefreshFabricLoaders,
+    // 存档管理
+    RefreshSaves,
+    SavesLoaded(String, Result<Vec<launcher::maps::MapSummary>, String>),
+    PendingCreationsLoaded(String, Result<Vec<launcher::maps::PendingCreation>, String>),
+    RecoverCreation(String),
+    CreationRecovered(Result<String, String>),
+    SaveEnter(String),
+    SaveRenameStart(String),
+    SaveRenameChanged(String),
+    SaveRenameCancel,
+    SaveRenameConfirm,
+    SaveRenameDone(Result<(), String>),
+    SaveDuplicate(String),
+    SaveDuplicated(Result<String, String>),
+    SaveDeletePressed(String),
+    SaveDeleted(Result<String, String>),
+    MapImportPathChanged(String),
+    ImportMap,
+    MapImported(Result<String, String>),
+    PickMapFile,
+    PickMapFolder,
+    MapPathPicked(Option<std::path::PathBuf>),
+    ExportMap(String),
+    ExportMapAs(String),
+    MapExported(Result<String, String>),
+    MapExportPathDone(Result<Option<String>, String>),
+    MapBackup(String),
+    MapBackupDone(Result<String, String>),
+    MapRestore(String),
+    MapRestored(Result<(), String>),
+    MapRefreshed(Result<(), String>),
+    EmptyTrash,
+    TrashEmptied(Result<usize, String>),
+    OpenSavesFolder,
+    OpenFolderDone(Result<(), String>),
+    NewWorldNameChanged(String),
+    NewWorldSeedChanged(String),
+    NewWorldFlat(bool),
+    NewWorldCheats(bool),
+    NewWorldGameMode(String),
+    NewWorldDifficulty(String),
+    NewWorldKeepInventory(bool),
+    NewWorldMobGriefing(bool),
+    NewWorldDaylightCycle(bool),
+    NewWorldWeatherCycle(bool),
+    NewWorldHostileMobs(bool),
+    NewWorldPvp(bool),
+    CreateWorld,
+    WorldCreated(Result<String, String>),
+    StaleCleanupDone(Result<usize, String>),
+    // 快速加入服务器
+    ServerAddressChanged(String),
+    ServerProfileNameChanged(String),
+    SaveServerProfile,
+    RemoveServerProfile(String),
+    PingServer(String),
+    ServerPingFinished(String, Result<launcher::server_ping::ServerPing, String>),
+    QuickJoinServer,
+    ConfigPersisted(Result<(), String>),
+    EnhancedLanguageSelected(String),
+    EnhancedGcSelected(String),
+    EnhancedMemorySelected(u32),
+    EnhancedCompactHeaders(bool),
+    // 本地服务端
+    ServerPortChanged(String),
+    ServerMemorySelected(u32),
+    ServerOnlineMode(bool),
+    ServerInstall,
+    ServerStart,
+    ServerStartAndJoin,
+    ServerStop,
+    ServerJoinNow,
+    ServerInstalled(Result<(), String>),
+    ServerStarted(Result<(), String>),
+    ServerStopped(Result<(), String>),
+    OpenEula,
+    OpenEulaDone(Result<(), String>),
+    EulaLoaded(Result<launcher::eula::EulaDocument, String>),
+    EulaUpdateChecked(Result<launcher::eula::EulaUpdate, String>),
+    EulaRetry,
+    EulaScrolled(bool),
+    EulaChecked(bool),
+    EulaAccept,
+    EulaCancel,
+    OpenServerFolder,
+    // 品牌设置
+    ToggleBrandTitle(bool),
+    BrandTextChanged(String),
+    ToggleGameDefaults(bool),
+    // 高级启动
+    ToggleDisableMultiplayer(bool),
+    ToggleDisableChat(bool),
+    ToggleFullscreen(bool),
+    WindowWidthChanged(String),
+    WindowHeightChanged(String),
+    GraphicsBackendSelected(String),
+    // 模组
+    RefreshMods,
+    ModsLoaded(String, bool, Result<Vec<launcher::mods::ModInfo>, String>),
+    ToggleMod(String, bool),
+    ModToggled(Result<(), String>),
+    ModDeletePressed(String),
+    ModDeleted(Result<String, String>),
+    EmptyModTrash,
+    ModTrashEmptied(Result<usize, String>),
+    OpenModsFolder,
     CoreEvent(CoreEvent),
 }
 
 // ── 更新逻辑 ─────────────────────────────────────────────
 
 fn update(app: &mut App, message: Message) -> Task<Message> {
+    if app.root_changed
+        && !matches!(
+            &message,
+            Message::RootDirChanged(_)
+                | Message::SaveSettings
+                | Message::SettingsSaved(_)
+                | Message::Navigate(_)
+                | Message::Tick(_)
+                | Message::CoreEvent(_)
+        )
+    {
+        app.status = "根目录已更改，请保存设置并重新启动".to_string();
+        return Task::none();
+    }
     match message {
         Message::Navigate(page) => {
             app.page = page;
-            app.pending_restore = None;
-            app.pending_delete = None;
             app.confirm_reset = false;
+            app.confirm_empty_trash = false;
+            app.renaming_save = None;
+            app.pending_save_delete = None;
+            app.pending_world_enter = None;
+            app.pending_map_restore = None;
             // 重播页面入场动画
             app.now = Instant::now();
             app.page_anim = Animation::new(false)
                 .duration(Duration::from_millis(300))
                 .easing(iced::animation::Easing::EaseOutCubic);
             app.page_anim.go_mut(true, app.now);
-            let backup_task = if page == Page::Settings {
-                match &app.selected_version {
-                    Some(v) => load_backups(v.id.clone()),
-                    None => Task::none(),
-                }
+            if page == Page::Maps {
+                load_saves_task(app)
+            } else if page == Page::Mods {
+                load_mods_task(app)
             } else {
                 Task::none()
-            };
-            backup_task
+            }
         }
         Message::Tick(t) => {
             app.now = t;
@@ -279,30 +579,96 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::ToggleDarkMode(dark) => {
             app.dark_mode = dark;
-            app.config.ui_mode = if dark { "dark".to_string() } else { "light".to_string() };
+            app.config.ui_mode = if dark {
+                "dark".to_string()
+            } else {
+                "light".to_string()
+            };
             let config = app.config.clone();
-            Task::perform(async move { launcher::config::save(&config) }, Message::SettingsSaved)
+            Task::perform(
+                async move { launcher::config::save(&config) },
+                Message::SettingsSaved,
+            )
         }
         Message::ToggleLogWindow(on) => {
             app.config.log_window = on;
             let config = app.config.clone();
-            Task::perform(async move { launcher::config::save(&config) }, Message::SettingsSaved)
+            Task::perform(
+                async move { launcher::config::save(&config) },
+                Message::SettingsSaved,
+            )
+        }
+        Message::ToggleEnhancedExperience(on) => {
+            app.config.enhanced_experience = on;
+            if !on {
+                app.version_tab = VersionTab::Release;
+                app.refilter();
+            }
+            app.mods.clear();
+            app.mods_version = None;
+            app.pending_mod_delete = None;
+            app.status = "增强体验设置将在下次游戏会话生效".into();
+            Task::none()
         }
         Message::VersionsLoaded(Ok(versions)) => {
             app.versions = versions;
+            // 普通模式允许安装版本清单里的任一正式版；快照仍不加入稳定版列表。
+            app.releases = app
+                .versions
+                .iter()
+                .filter(|v| v.kind == "release")
+                .cloned()
+                .collect();
             app.refilter();
-            Task::none()
+            // Fabric 卡片默认选最新正式版，并拉取该版本可用的加载器
+            if app.fabric_game.is_none() {
+                app.fabric_game = app.releases.first().cloned();
+            }
+            match app.fabric_game.clone() {
+                Some(game) if app.fabric_loaders.is_empty() => {
+                    app.fabric_loading = true;
+                    Task::perform(
+                        launcher::fabric::list_loaders(game.id),
+                        Message::FabricLoadersLoaded,
+                    )
+                }
+                _ => Task::none(),
+            }
         }
         Message::VersionsLoaded(Err(e)) => {
             app.status = format!("加载版本列表失败: {}", e);
             Task::none()
         }
+        Message::LocalVersionsLoaded(dir, _)
+            if dir != launcher::config::resolve_game_dir(&app.config) =>
+        {
+            Task::none()
+        }
+        Message::LocalVersionsLoaded(_, local) => {
+            app.local_versions = local;
+            app.local_choices = local_choices(&app.local_versions);
+            app.refilter();
+            // 安装完成后自动选中新版本
+            if let Some(id) = app.pending_select.take() {
+                if let Some(choice) = app.local_choices.iter().find(|v| v.id == id).cloned() {
+                    app.selected_version = Some(choice);
+                }
+            }
+            Task::none()
+        }
         Message::ProfilesLoaded(Ok(store)) => {
             app.profiles = store.profiles.clone();
-            app.selected_profile = store
-                .last_used
+            app.selected_profile = app
+                .config
+                .last_profile
                 .as_ref()
                 .and_then(|name| app.profiles.iter().find(|p| &p.name == name))
+                .or_else(|| {
+                    store
+                        .last_used
+                        .as_ref()
+                        .and_then(|name| app.profiles.iter().find(|p| &p.name == name))
+                })
                 .cloned()
                 .or_else(|| app.profiles.first().cloned());
             Task::none()
@@ -332,6 +698,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::VersionSelected(v) => {
+            app.pending_world_enter = None;
             app.selected_version = Some(v);
             Task::none()
         }
@@ -349,7 +716,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::CreateProfile => {
             let name = app.new_profile_name.trim().to_string();
-            Task::perform(async move { launcher::profiles::create(name) }, Message::ProfileCreated)
+            Task::perform(
+                async move { launcher::profiles::create(name) },
+                Message::ProfileCreated,
+            )
         }
         Message::ProfileCreated(Ok(profile)) => {
             app.status = format!("已创建档案: {}", profile.name);
@@ -366,13 +736,20 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::perform(async { scan_java_async().await }, Message::JavaLoaded)
         }
         Message::DownloadPressed => {
+            if app.downloading || app.fabric_installing || app.launching || app.game_running {
+                app.status = "已有下载、安装或游戏任务正在进行".to_string();
+                return Task::none();
+            }
             let Some(version) = app.selected_version.clone() else {
                 app.status = "请先选择一个版本".to_string();
                 return Task::none();
             };
+            if version.local {
+                app.status = "该版本已安装，可直接启动".to_string();
+                return Task::none();
+            }
             let game_dir = launcher::config::resolve_game_dir(&app.config);
             let concurrency = app.config.download_concurrency;
-            let saves_isolation = app.config.saves_isolation;
             let events = core_event_sender();
 
             app.downloading = true;
@@ -380,9 +757,6 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.status = format!("正在下载 {} ...", version.id);
             Task::perform(
                 async move {
-                    if saves_isolation {
-                        launcher::backup::prepare(&version.id).await?;
-                    }
                     launcher::download::run(&version.id, &game_dir, concurrency, events)
                         .await
                         .map_err(|e| e.to_string())
@@ -399,83 +773,62 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     .map(|v| v.id.as_str())
                     .unwrap_or("")
             );
-            Task::none()
+            let prefetch = if !app.eula_accepted {
+                let config = app.config.clone();
+                app.eula_loading = true;
+                app.eula_error = None;
+                Task::perform(
+                    async move { launcher::eula::load_or_fetch(&config).await },
+                    Message::EulaLoaded,
+                )
+            } else {
+                Task::none()
+            };
+            Task::batch([
+                load_local_versions(launcher::config::resolve_game_dir(&app.config)),
+                prefetch,
+            ])
         }
         Message::DownloadFinished(Err(e)) => {
             app.downloading = false;
             app.status = format!("下载失败: {}", e);
             Task::none()
         }
-        Message::LaunchPressed => {
-            let Some(version) = app.selected_version.clone() else {
-                app.status = "请先选择一个版本".to_string();
-                return Task::none();
-            };
-            let Some(profile) = app.selected_profile.clone() else {
-                app.status = "请先选择或创建档案".to_string();
-                return Task::none();
-            };
-            let Some(java) = app.selected_java.clone() else {
-                app.status = "请先选择 Java 运行时".to_string();
-                return Task::none();
-            };
-
-            let saves_isolation = app.config.saves_isolation;
-            let events = core_event_sender();
-
-            // 启用日志模式时拉起独立日志窗口（复用已打开的窗口）
-            if app.config.log_window && app.log_writer.is_none() {
-                app.log_writer = spawn_log_window(app.dark_mode);
-                if app.log_writer.is_some() {
-                    app.status = format!("正在启动 {} ...（日志窗口已打开）", version.id);
-                }
-            }
-
-            let opts = launcher::launch::LaunchOptions {
-                version: version.id.clone(),
-                game_dir: launcher::config::resolve_game_dir(&app.config),
-                instance_dir: launcher::config::get_version_root(&app.config, &version.id),
-                username: profile.name,
-                uuid: profile.uuid,
-                runtime_dir: std::path::PathBuf::from(java.path),
-                auth_method: profile.auth_method,
-                access_token: profile.access_token,
-            };
-
-            app.launching = true;
-            app.game_running = true;
-            app.status = format!("正在启动 {} ...", version.id);
-            Task::perform(
-                async move {
-                    if saves_isolation {
-                        launcher::backup::prepare(&opts.version).await?;
-                    }
-                    launcher::launch::launch(opts, events)
-                        .await
-                        .map_err(|e| e.to_string())
-                },
-                Message::LaunchFinished,
-            )
-        }
+        Message::LaunchPressed => start_launch(app, None),
         Message::LaunchFinished(Ok(())) => {
             app.launching = false;
             app.game_running = false;
+            app.active_managed = false;
             app.status = "游戏已退出".to_string();
-            Task::none()
+            if let Some(id) = app.active_map.take() {
+                let config = app.config.clone();
+                Task::perform(
+                    async move { launcher::maps::refresh_after_play(&config, &id).map(|_| ()) },
+                    Message::MapRefreshed,
+                )
+            } else {
+                Task::none()
+            }
         }
         Message::LaunchFinished(Err(e)) => {
             app.launching = false;
             app.game_running = false;
+            app.active_managed = false;
+            app.active_map = None;
             app.status = format!("启动失败: {}", e);
-            Task::none()
+            load_saves_task(app)
         }
         Message::KillPressed => {
-            app.status = "正在终止游戏...".to_string();
-            Task::perform(launcher::launch::kill_game(), Message::KillFinished)
+            if app.active_managed {
+                app.status = "正在请求游戏保存并退出...".to_string();
+                Task::perform(launcher::launch::quit_managed_game(), Message::KillFinished)
+            } else {
+                app.status = "正在终止游戏...".to_string();
+                Task::perform(launcher::launch::kill_game(), Message::KillFinished)
+            }
         }
         Message::KillFinished(Ok(())) => {
-            app.game_running = false;
-            app.status = "游戏已终止".to_string();
+            app.status = "已请求终止游戏，等待进程退出...".to_string();
             Task::none()
         }
         Message::KillFinished(Err(e)) => {
@@ -483,8 +836,16 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::MsAuthPressed => {
+            let session = match launcher::auth::AuthSession::new() {
+                Ok(session) => session,
+                Err(error) => {
+                    app.status = error;
+                    return Task::none();
+                }
+            };
             app.status = "已打开浏览器，请在浏览器中完成 Microsoft 授权...".to_string();
-            let url = launcher::auth::get_auth_url();
+            let url = session.authorization_url();
+            app.ms_auth_session = Some(session);
             Task::perform(
                 async move { open::that(url).map_err(|e| e.to_string()) },
                 Message::MsAuthOpened,
@@ -500,16 +861,22 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::MsLoginPressed => {
-            let Some(code) = extract_auth_code(&app.ms_code_input) else {
-                app.status = "未在输入中找到 code（可粘贴完整回调 URL 或仅 code 值）".to_string();
+            let Some(session) = app.ms_auth_session.take() else {
+                app.status = "请先打开微软登录页".to_string();
                 return Task::none();
             };
+            if let Err(error) = session.callback_code(&app.ms_code_input) {
+                app.ms_auth_session = Some(session);
+                app.status = error;
+                return Task::none();
+            }
+            let callback = app.ms_code_input.clone();
             let events = core_event_sender();
             app.ms_logging_in = true;
             app.status = "正在完成 Microsoft 登录...".to_string();
             Task::perform(
                 async move {
-                    let online = launcher::auth::login_with_code(&code, &events).await?;
+                    let online = session.login(&callback, &events).await?;
                     launcher::profiles::upsert_online(online)
                 },
                 Message::MsLoginFinished,
@@ -534,15 +901,42 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::RootDirChanged(dir) => {
+            if app.config.root_dir == dir {
+                return Task::none();
+            }
+            if app.game_running
+                || app.launching
+                || app.downloading
+                || app.fabric_installing
+                || app.server_running
+                || app.server_busy
+                || app.new_world_creating
+                || app.ms_logging_in
+            {
+                app.status = "请先停止当前任务，再修改根目录".to_string();
+                return Task::none();
+            }
             app.config.root_dir = dir;
-            Task::none()
-        }
-        Message::ToggleVersionIsolation(on) => {
-            app.config.version_isolation = on;
-            Task::none()
-        }
-        Message::ToggleSavesIsolation(on) => {
-            app.config.saves_isolation = on;
+            app.root_changed = true;
+            app.local_versions.clear();
+            app.local_choices.clear();
+            app.selected_version = None;
+            app.saves.clear();
+            app.pending_creations.clear();
+            app.mods.clear();
+            app.mods_version = None;
+            app.profiles.clear();
+            app.selected_profile = None;
+            app.pending_select = None;
+            app.refilter();
+            app.eula_accepted = launcher::eula::is_accepted(&app.config);
+            app.eula_sha1 = launcher::eula::accepted_sha1(&app.config);
+            app.eula_checking = false;
+            app.eula_text = None;
+            app.eula_source = None;
+            app.eula_warning = None;
+            app.eula_error = None;
+            app.status = "根目录已变更；请保存设置并重新启动以重新加载档案".to_string();
             Task::none()
         }
         Message::ConcurrencySelected(n) => {
@@ -557,10 +951,19 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             if let Some(profile) = &app.selected_profile {
                 config.last_profile = Some(profile.name.clone());
             }
-            Task::perform(async move { launcher::config::save(&config) }, Message::SettingsSaved)
+            app.config = config.clone();
+            Task::perform(
+                async move { launcher::config::save(&config) },
+                Message::SettingsSaved,
+            )
         }
         Message::SettingsSaved(Ok(())) => {
-            app.status = "设置已保存".to_string();
+            app.status = if app.root_changed {
+                "设置已保存，请重新启动"
+            } else {
+                "设置已保存"
+            }
+            .to_string();
             Task::none()
         }
         Message::SettingsSaved(Err(e)) => {
@@ -570,7 +973,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::ResetAllPressed => {
             if app.confirm_reset {
                 app.confirm_reset = false;
-                Task::perform(async { launcher::config::reset_all() }, Message::ResetAllDone)
+                Task::perform(
+                    async { launcher::config::reset_all() },
+                    Message::ResetAllDone,
+                )
             } else {
                 app.confirm_reset = true;
                 app.status = "再次点击红色按钮才会真正重置".to_string();
@@ -579,118 +985,967 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::ResetAllDone(Ok(())) => {
             app.config = AppConfig::default();
+            app.eula_accepted = launcher::eula::is_accepted(&app.config);
+            app.eula_sha1 = launcher::eula::accepted_sha1(&app.config);
+            app.eula_checking = false;
+            app.eula_text = None;
+            app.eula_source = None;
+            app.eula_warning = None;
+            app.eula_error = None;
             app.profiles.clear();
             app.selected_profile = None;
             app.status = "所有配置已重置".to_string();
-            Task::perform(async { launcher::profiles::load() }, Message::ProfilesLoaded)
+            Task::perform(
+                async { launcher::profiles::load() },
+                Message::ProfilesLoaded,
+            )
         }
         Message::ResetAllDone(Err(e)) => {
             app.status = format!("重置失败: {}", e);
             Task::none()
         }
-        Message::BackupCreatePressed => {
-            let Some(version) = app.selected_version.as_ref().map(|v| v.id.clone()) else {
-                app.status = "请先在「启动」页选择一个版本".to_string();
-                return Task::none();
-            };
-            if app.game_running || app.launching {
-                app.status = "游戏运行中，不建议备份存档".to_string();
-                return Task::none();
-            }
-            app.status = "正在创建存档备份...".to_string();
+        Message::FabricGameSelected(game) => {
+            app.fabric_game = Some(game.clone());
+            app.fabric_loaders.clear();
+            app.fabric_loader = None;
+            app.fabric_loading = true;
+            app.status = format!("正在获取 {} 可用的 Fabric 加载器...", game.id);
             Task::perform(
-                async move {
-                    tokio::task::spawn_blocking(move || launcher::backup::create(&version))
-                        .await
-                        .map_err(|e| e.to_string())?
-                },
-                Message::BackupCreated,
+                launcher::fabric::list_loaders(game.id),
+                Message::FabricLoadersLoaded,
             )
         }
-        Message::BackupCreated(Ok(name)) => {
-            app.status = format!("备份已创建: {}", name);
-            match app.selected_version.clone() {
-                Some(v) => load_backups(v.id),
-                None => Task::none(),
-            }
-        }
-        Message::BackupCreated(Err(e)) => {
-            app.status = format!("创建备份失败: {}", e);
-            Task::none()
-        }
-        Message::BackupLoad(version) => load_backups(version),
-        Message::BackupsLoaded(Ok(backups)) => {
-            app.backups = backups;
-            Task::none()
-        }
-        Message::BackupsLoaded(Err(e)) => {
-            app.status = format!("加载备份列表失败: {}", e);
-            Task::none()
-        }
-        Message::BackupRestorePressed(name) => {
-            if app.pending_restore.as_deref() == Some(name.as_str()) {
-                // 二次确认通过，执行恢复
-                app.pending_restore = None;
-                let Some(version) = app.selected_version.as_ref().map(|v| v.id.clone()) else {
-                    app.status = "请先选择版本".to_string();
-                    return Task::none();
-                };
-                app.status = "正在恢复存档...".to_string();
+        Message::RefreshFabricLoaders => match app.fabric_game.clone() {
+            Some(game) => {
+                app.fabric_loading = true;
                 Task::perform(
-                    async move { launcher::backup::restore(&version, &name).await },
-                    Message::BackupRestored,
+                    launcher::fabric::list_loaders(game.id),
+                    Message::FabricLoadersLoaded,
+                )
+            }
+            None => {
+                app.status = "请先选择基准游戏版本".to_string();
+                Task::none()
+            }
+        },
+        Message::FabricLoadersLoaded(Ok(loaders)) => {
+            app.fabric_loading = false;
+            app.fabric_loaders = loaders;
+            // 保留原选择（若仍存在），否则选第一个稳定版
+            let current = app.fabric_loader.take().map(|l| l.version);
+            app.fabric_loader = current
+                .and_then(|v| app.fabric_loaders.iter().find(|l| l.version == v).cloned())
+                .or_else(|| launcher::fabric::default_loader(&app.fabric_loaders));
+            app.status = format!("已获取 {} 个 Fabric 加载器版本", app.fabric_loaders.len());
+            Task::none()
+        }
+        Message::FabricLoadersLoaded(Err(e)) => {
+            app.fabric_loading = false;
+            app.fabric_loaders.clear();
+            app.fabric_loader = None;
+            app.status = format!("获取 Fabric 加载器列表失败: {}", e);
+            Task::none()
+        }
+        Message::FabricLoaderSelected(loader) => {
+            app.fabric_loader = Some(loader);
+            Task::none()
+        }
+        Message::FabricInstallPressed => {
+            if app.fabric_installing || app.downloading || app.game_running || app.launching {
+                return Task::none();
+            }
+            let Some(game) = app.fabric_game.clone() else {
+                app.status = "请先选择基准游戏版本".to_string();
+                return Task::none();
+            };
+            let Some(loader) = app.fabric_loader.clone() else {
+                app.status = "请先选择 Fabric 加载器版本".to_string();
+                return Task::none();
+            };
+
+            let version_id = launcher::fabric::version_id(&game.id, &loader.version);
+            let opts = launcher::fabric::InstallOptions {
+                game_version: game.id.clone(),
+                loader_version: loader.version.clone(),
+                game_dir: launcher::config::resolve_game_dir(&app.config),
+                instance_dir: launcher::config::get_version_root(&app.config, &version_id),
+                concurrency: app.config.download_concurrency,
+            };
+            let events = core_event_sender();
+
+            app.fabric_installing = true;
+            app.progress = None;
+            app.status = format!(
+                "正在安装 Fabric {} / Minecraft {} ...",
+                loader.version, game.id
+            );
+            Task::perform(
+                async move { launcher::fabric::install(opts, events).await },
+                Message::FabricInstalled,
+            )
+        }
+        Message::FabricInstalled(Ok(result)) => {
+            app.fabric_installing = false;
+            app.pending_select = Some(result.version_id.clone());
+            app.version_tab = VersionTab::Installed;
+            app.status = format!(
+                "Fabric {} / Minecraft {} 安装完成（{} 个库）",
+                result.loader_version, result.game_version, result.libraries_total
+            );
+            load_local_versions(launcher::config::resolve_game_dir(&app.config))
+        }
+        Message::FabricInstalled(Err(e)) => {
+            app.fabric_installing = false;
+            app.status = format!("Fabric 安装失败: {}", e);
+            Task::none()
+        }
+        Message::RefreshSaves => load_saves_task(app),
+        Message::SavesLoaded(root, _) if root != app.config.root_dir => Task::none(),
+        Message::SavesLoaded(_, Ok(worlds)) => {
+            app.saves = worlds;
+            Task::none()
+        }
+        Message::SavesLoaded(_, Err(e)) => {
+            app.status = format!("加载存档失败: {}", e);
+            Task::none()
+        }
+        Message::PendingCreationsLoaded(root, _) if root != app.config.root_dir => Task::none(),
+        Message::PendingCreationsLoaded(_, Ok(pending)) => {
+            app.pending_creations = pending;
+            Task::none()
+        }
+        Message::PendingCreationsLoaded(_, Err(e)) => {
+            app.status = format!("读取待恢复世界失败: {e}");
+            Task::none()
+        }
+        Message::RecoverCreation(id) => {
+            if app.game_running || app.launching {
+                app.status = "请先退出游戏再恢复世界".into();
+                return Task::none();
+            }
+            let config = app.config.clone();
+            app.status = "正在验证待恢复世界...".into();
+            Task::perform(
+                async move {
+                    launcher::maps::recover_client_creation(&config, &id)
+                        .map(|map| map.name.clone())
+                },
+                Message::CreationRecovered,
+            )
+        }
+        Message::CreationRecovered(Ok(name)) => {
+            app.status = format!("已恢复世界：{name}");
+            load_saves_task(app)
+        }
+        Message::CreationRecovered(Err(e)) => {
+            app.status = format!("恢复失败，原有数据已保留: {e}");
+            load_saves_task(app)
+        }
+        Message::SaveEnter(id) => {
+            if app.pending_world_enter.as_deref() != Some(id.as_str()) {
+                app.pending_world_enter = Some(id);
+                app.status =
+                    "请确认当前游戏版本与地图兼容，再次点击进入；启动前会自动备份".to_string();
+                return Task::none();
+            }
+            app.pending_world_enter = None;
+            app.status = format!("正在进入存档 {id} ...");
+            start_launch(
+                app,
+                Some(launcher::launch::QuickPlayTarget::Singleplayer(id)),
+            )
+        }
+        Message::SaveRenameStart(id) => {
+            let old = app
+                .saves
+                .iter()
+                .find(|w| w.id == id)
+                .map(|w| w.name.clone())
+                .unwrap_or_else(|| id.clone());
+            app.renaming_save = Some(id);
+            app.save_name_input = old;
+            app.pending_save_delete = None;
+            Task::none()
+        }
+        Message::SaveRenameChanged(name) => {
+            app.save_name_input = name;
+            Task::none()
+        }
+        Message::SaveRenameCancel => {
+            app.renaming_save = None;
+            app.save_name_input.clear();
+            Task::none()
+        }
+        Message::SaveRenameConfirm => {
+            if app.game_running || app.launching {
+                app.status = "请先退出游戏再修改地图".to_string();
+                return Task::none();
+            }
+            let Some(id) = app.renaming_save.clone() else {
+                return Task::none();
+            };
+            let name = app.save_name_input.trim().to_string();
+            if name.is_empty() {
+                app.status = "世界名称不能为空".to_string();
+                return Task::none();
+            }
+            let config = app.config.clone();
+            app.status = "正在重命名存档...".to_string();
+            Task::perform(
+                async move { launcher::maps::rename(&config, &id, &name) },
+                Message::SaveRenameDone,
+            )
+        }
+        Message::SaveRenameDone(Ok(())) => {
+            app.renaming_save = None;
+            app.save_name_input.clear();
+            app.status = "存档已重命名".to_string();
+            load_saves_task(app)
+        }
+        Message::SaveRenameDone(Err(e)) => {
+            app.status = format!("重命名失败: {}", e);
+            Task::none()
+        }
+        Message::SaveDuplicate(id) => {
+            if app.game_running || app.launching {
+                app.status = "请先退出游戏再复制地图".to_string();
+                return Task::none();
+            }
+            let config = app.config.clone();
+            app.status = "正在复制存档...".to_string();
+            Task::perform(
+                async move { launcher::maps::duplicate(&config, &id, None) },
+                Message::SaveDuplicated,
+            )
+        }
+        Message::SaveDuplicated(Ok(new_id)) => {
+            app.status = format!("已复制存档: {new_id}");
+            load_saves_task(app)
+        }
+        Message::SaveDuplicated(Err(e)) => {
+            app.status = format!("复制存档失败: {}", e);
+            Task::none()
+        }
+        Message::SaveDeletePressed(id) => {
+            if app.game_running || app.launching {
+                app.status = "请先退出游戏再删除地图".to_string();
+                return Task::none();
+            }
+            if app.pending_save_delete.as_deref() == Some(id.as_str()) {
+                app.pending_save_delete = None;
+                let config = app.config.clone();
+                app.status = "正在移入回收站...".to_string();
+                Task::perform(
+                    async move {
+                        launcher::maps::move_to_trash(&config, &id).map(|p| p.display().to_string())
+                    },
+                    Message::SaveDeleted,
                 )
             } else {
-                app.pending_restore = Some(name);
-                app.pending_delete = None;
-                app.status = "恢复会覆盖当前存档，再点一次确认".to_string();
+                app.pending_save_delete = Some(id);
+                app.renaming_save = None;
+                app.status = "删除会移动到 maps/.deepslate-trash/，再点一次确认".to_string();
                 Task::none()
             }
         }
-        Message::BackupRestored(Ok(())) => {
-            app.status = "存档已恢复".to_string();
-            match app.selected_version.clone() {
-                Some(v) => load_backups(v.id),
-                None => Task::none(),
-            }
+        Message::SaveDeleted(Ok(path)) => {
+            app.status = format!("已移入回收站: {path}");
+            load_saves_task(app)
         }
-        Message::BackupRestored(Err(e)) => {
-            app.status = format!("恢复失败: {}", e);
+        Message::SaveDeleted(Err(e)) => {
+            app.status = format!("删除存档失败: {}", e);
             Task::none()
         }
-        Message::BackupDeletePressed(name) => {
-            if app.pending_delete.as_deref() == Some(name.as_str()) {
-                app.pending_delete = None;
-                let Some(version) = app.selected_version.as_ref().map(|v| v.id.clone()) else {
-                    app.status = "请先选择版本".to_string();
+        Message::MapImportPathChanged(path) => {
+            app.map_import_path = path;
+            Task::none()
+        }
+        Message::ImportMap => {
+            let path = app.map_import_path.trim().to_string();
+            if path.is_empty() {
+                app.status = "请输入地图 zip 或世界文件夹路径".to_string();
+                return Task::none();
+            }
+            app.status = "正在导入地图...".to_string();
+            import_map_task(app.config.clone(), std::path::PathBuf::from(path))
+        }
+        Message::MapImported(Ok(name)) => {
+            app.map_import_path.clear();
+            app.status = format!("地图已导入: {name}");
+            load_saves_task(app)
+        }
+        Message::MapImported(Err(e)) => {
+            app.status = format!("导入地图失败: {e}");
+            Task::none()
+        }
+        Message::PickMapFile => Task::perform(
+            async {
+                rfd::AsyncFileDialog::new()
+                    .set_title("导入地图 zip")
+                    .add_filter("Minecraft 地图", &["zip"])
+                    .pick_file()
+                    .await
+                    .map(|f| f.path().to_path_buf())
+            },
+            Message::MapPathPicked,
+        ),
+        Message::PickMapFolder => Task::perform(
+            async {
+                rfd::AsyncFileDialog::new()
+                    .set_title("导入世界文件夹")
+                    .pick_folder()
+                    .await
+                    .map(|f| f.path().to_path_buf())
+            },
+            Message::MapPathPicked,
+        ),
+        Message::MapPathPicked(Some(path)) => {
+            app.map_import_path = path.display().to_string();
+            app.status = "正在导入地图...".to_string();
+            import_map_task(app.config.clone(), path)
+        }
+        Message::MapPathPicked(None) => {
+            app.status = "已取消选择".to_string();
+            Task::none()
+        }
+        Message::ExportMap(id) => {
+            if app.game_running || app.launching {
+                app.status = "请先退出游戏再导出地图".to_string();
+                return Task::none();
+            }
+            let config = app.config.clone();
+            app.status = "正在导出地图...".to_string();
+            Task::perform(
+                async move {
+                    launcher::maps::export_zip(&config, &id, None).map(|p| p.display().to_string())
+                },
+                Message::MapExported,
+            )
+        }
+        Message::ExportMapAs(id) if app.game_running || app.launching => {
+            let _ = id;
+            app.status = "请先退出游戏再导出地图".to_string();
+            Task::none()
+        }
+        Message::ExportMapAs(id) => Task::perform(
+            {
+                let config = app.config.clone();
+                async move {
+                    let Some(path) = rfd::AsyncFileDialog::new()
+                        .set_title("导出地图")
+                        .set_file_name(format!("{id}.zip"))
+                        .add_filter("Minecraft 地图", &["zip"])
+                        .save_file()
+                        .await
+                        .map(|f| f.path().to_path_buf())
+                    else {
+                        return Ok(None);
+                    };
+                    launcher::maps::export_zip(&config, &id, Some(&path))
+                        .map(|p| Some(p.display().to_string()))
+                }
+            },
+            Message::MapExportPathDone,
+        ),
+        Message::MapExported(Ok(path)) => {
+            app.status = format!("地图已导出: {path}");
+            Task::none()
+        }
+        Message::MapExported(Err(e)) => {
+            app.status = format!("导出地图失败: {e}");
+            Task::none()
+        }
+        Message::MapExportPathDone(Ok(Some(path))) => {
+            app.status = format!("地图已导出: {path}");
+            Task::none()
+        }
+        Message::MapExportPathDone(Ok(None)) => {
+            app.status = "已取消导出".to_string();
+            Task::none()
+        }
+        Message::MapExportPathDone(Err(e)) => {
+            app.status = format!("导出地图失败: {e}");
+            Task::none()
+        }
+        Message::MapBackup(id) => {
+            if app.game_running || app.launching {
+                app.status = "请先退出游戏再备份地图".to_string();
+                return Task::none();
+            }
+            let config = app.config.clone();
+            app.status = "正在备份地图...".to_string();
+            Task::perform(
+                async move { launcher::maps::backup(&config, &id) },
+                Message::MapBackupDone,
+            )
+        }
+        Message::MapBackupDone(Ok(name)) => {
+            app.status = format!("地图备份已创建: {name}");
+            Task::none()
+        }
+        Message::MapBackupDone(Err(e)) => {
+            app.status = format!("备份地图失败: {e}");
+            Task::none()
+        }
+        Message::MapRestore(id) => {
+            if app.game_running || app.launching {
+                app.status = "请先退出游戏再恢复地图".to_string();
+                return Task::none();
+            }
+            if app.pending_map_restore.as_deref() != Some(id.as_str()) {
+                app.pending_map_restore = Some(id);
+                app.status = "再次点击「确认恢复？」会用最近一份备份覆盖当前地图".to_string();
+                return Task::none();
+            }
+            app.pending_map_restore = None;
+            let config = app.config.clone();
+            app.status = "正在恢复地图备份...".to_string();
+            Task::perform(
+                async move {
+                    let backups = launcher::maps::list_backups(&config, &id)?;
+                    let name = backups
+                        .first()
+                        .ok_or_else(|| "没有可用的地图备份".to_string())?;
+                    launcher::maps::restore_backup(&config, &id, name)
+                },
+                Message::MapRestored,
+            )
+        }
+        Message::MapRestored(Ok(())) => {
+            app.status = "地图已从最近备份恢复".to_string();
+            load_saves_task(app)
+        }
+        Message::MapRestored(Err(e)) => {
+            app.status = format!("恢复地图失败: {e}");
+            Task::none()
+        }
+        Message::MapRefreshed(Ok(())) => load_saves_task(app),
+        Message::MapRefreshed(Err(e)) => {
+            app.status = format!("刷新地图元数据失败: {e}");
+            load_saves_task(app)
+        }
+        Message::EmptyTrash => {
+            if !app.confirm_empty_trash {
+                app.confirm_empty_trash = true;
+                app.status = "再次点击确认永久清空地图回收站，此操作不可撤销".to_string();
+                return Task::none();
+            }
+            app.confirm_empty_trash = false;
+            let config = app.config.clone();
+            Task::perform(
+                async move { launcher::maps::empty_trash(&config) },
+                Message::TrashEmptied,
+            )
+        }
+        Message::TrashEmptied(Ok(count)) => {
+            app.status = format!("已清空回收站（{count} 项）");
+            Task::none()
+        }
+        Message::TrashEmptied(Err(e)) => {
+            app.status = format!("清空回收站失败: {}", e);
+            Task::none()
+        }
+        Message::OpenSavesFolder => {
+            let config = app.config.clone();
+            Task::perform(
+                async move {
+                    let dir = launcher::maps::ensure_root(&config)?;
+                    open::that(&dir).map_err(|e| e.to_string())
+                },
+                Message::OpenFolderDone,
+            )
+        }
+        Message::OpenFolderDone(Ok(())) => Task::none(),
+        Message::OpenFolderDone(Err(e)) => {
+            app.status = format!("打开目录失败: {}", e);
+            Task::none()
+        }
+        Message::NewWorldNameChanged(name) => {
+            app.new_world_name = name;
+            Task::none()
+        }
+        Message::NewWorldSeedChanged(seed) => {
+            app.new_world_seed = seed;
+            Task::none()
+        }
+        Message::NewWorldFlat(flat) => {
+            app.new_world_flat = flat;
+            Task::none()
+        }
+        Message::NewWorldCheats(cheats) => {
+            app.new_world_cheats = cheats;
+            Task::none()
+        }
+        Message::NewWorldGameMode(mode) => {
+            app.new_world_gamemode = mode;
+            Task::none()
+        }
+        Message::NewWorldDifficulty(difficulty) => {
+            app.new_world_difficulty = difficulty;
+            Task::none()
+        }
+        Message::NewWorldKeepInventory(enabled) => {
+            app.new_world_keep_inventory = enabled;
+            Task::none()
+        }
+        Message::NewWorldMobGriefing(enabled) => {
+            app.new_world_mob_griefing = enabled;
+            Task::none()
+        }
+        Message::NewWorldDaylightCycle(enabled) => {
+            app.new_world_daylight_cycle = enabled;
+            Task::none()
+        }
+        Message::NewWorldWeatherCycle(enabled) => {
+            app.new_world_weather_cycle = enabled;
+            Task::none()
+        }
+        Message::NewWorldHostileMobs(enabled) => {
+            app.new_world_hostile_mobs = enabled;
+            Task::none()
+        }
+        Message::NewWorldPvp(enabled) => {
+            app.new_world_pvp = enabled;
+            Task::none()
+        }
+        Message::CreateWorld => create_world_action(app),
+        Message::WorldCreated(Ok(id)) => {
+            app.new_world_creating = false;
+            app.status = format!("已创建世界: {id}");
+            load_saves_task(app)
+        }
+        Message::WorldCreated(Err(e)) => {
+            app.new_world_creating = false;
+            app.status = format!("创建世界失败: {}", e);
+            Task::none()
+        }
+        Message::StaleCleanupDone(Ok(count)) if count > 0 => {
+            app.status = format!("已清理 {count} 个上次未完成的生成任务");
+            load_saves_task(app)
+        }
+        Message::StaleCleanupDone(Ok(_)) => Task::none(),
+        Message::StaleCleanupDone(Err(e)) => {
+            app.status = format!("清理陈旧生成任务失败: {e}");
+            Task::none()
+        }
+        Message::ServerAddressChanged(address) => {
+            app.server_address = address;
+            Task::none()
+        }
+        Message::ServerProfileNameChanged(name) => {
+            app.server_profile_name = name;
+            Task::none()
+        }
+        Message::SaveServerProfile => {
+            let address = app.server_address.trim().to_string();
+            if address.is_empty()
+                || address.len() > 255
+                || address.chars().any(char::is_control)
+                || address.chars().any(char::is_whitespace)
+            {
+                app.status = "请输入有效服务器地址后再保存".into();
+                return Task::none();
+            }
+            let name = app.server_profile_name.trim();
+            if name.chars().count() > 48 || name.chars().any(char::is_control) {
+                app.status = "服务器名称最多 48 个字符".into();
+                return Task::none();
+            }
+            let name = if name.is_empty() {
+                address.clone()
+            } else {
+                name.to_string()
+            };
+            app.config
+                .saved_servers
+                .retain(|item| item.address != address);
+            app.config
+                .saved_servers
+                .insert(0, launcher::config::SavedServer { name, address });
+            app.config.saved_servers.truncate(32);
+            app.server_profile_name.clear();
+            persist_config_task(app)
+        }
+        Message::RemoveServerProfile(address) => {
+            app.config
+                .saved_servers
+                .retain(|item| item.address != address);
+            app.server_ping_status.remove(&address);
+            persist_config_task(app)
+        }
+        Message::PingServer(address) => {
+            app.server_ping_status
+                .insert(address.clone(), "正在查询服务器状态…".into());
+            let result_address = address.clone();
+            Task::perform(
+                async move { launcher::server_ping::ping(&address).await },
+                move |result| Message::ServerPingFinished(result_address, result),
+            )
+        }
+        Message::ServerPingFinished(address, result) => {
+            let status = match result {
+                Ok(ping) => {
+                    let mut parts = vec![format!("在线 · {} ms", ping.latency_ms)];
+                    if let (Some(online), Some(max)) = (ping.online, ping.max) {
+                        parts.push(format!("{online}/{max} 人"));
+                    }
+                    if let Some(version) = ping.version {
+                        parts.push(version);
+                    }
+                    if !ping.motd.is_empty() {
+                        parts.push(ping.motd.chars().take(80).collect());
+                    }
+                    parts.join(" · ")
+                }
+                Err(error) => format!("暂不可达 · {}", error.chars().take(64).collect::<String>()),
+            };
+            app.server_ping_status.insert(address, status);
+            Task::none()
+        }
+        Message::QuickJoinServer => {
+            let address = app.server_address.trim().to_string();
+            if address.is_empty() {
+                app.status = "请输入服务器地址（host 或 host:port）".to_string();
+                return Task::none();
+            }
+            app.config.recent_servers.retain(|s| s != &address);
+            app.config.recent_servers.insert(0, address.clone());
+            app.config.recent_servers.truncate(8);
+            let config = app.config.clone();
+            let persist = Task::perform(
+                async move { launcher::config::save(&config) },
+                Message::ConfigPersisted,
+            );
+            app.status = format!("正在加入服务器 {address} ...");
+            Task::batch([
+                persist,
+                start_launch(
+                    app,
+                    Some(launcher::launch::QuickPlayTarget::Multiplayer(address)),
+                ),
+            ])
+        }
+        Message::ConfigPersisted(Ok(())) => Task::none(),
+        Message::ConfigPersisted(Err(e)) => {
+            app.status = format!("保存配置失败: {}", e);
+            Task::none()
+        }
+        Message::EnhancedLanguageSelected(language) => {
+            app.config.enhanced_language = language;
+            Task::none()
+        }
+        Message::EnhancedGcSelected(gc) => {
+            app.config.enhanced_gc = gc;
+            Task::none()
+        }
+        Message::EnhancedMemorySelected(memory) => {
+            app.config.enhanced_max_memory_mb = memory;
+            Task::none()
+        }
+        Message::EnhancedCompactHeaders(enabled) => {
+            app.config.enhanced_compact_object_headers = enabled;
+            Task::none()
+        }
+        Message::ServerPortChanged(text) => {
+            app.server_port_input = text;
+            Task::none()
+        }
+        Message::ServerMemorySelected(mb) => {
+            app.config.server_memory_mb = mb;
+            persist_config_task(app)
+        }
+        Message::ServerOnlineMode(on) => {
+            app.config.server_online_mode = on;
+            persist_config_task(app)
+        }
+        Message::ServerInstall => server_action(app, true),
+        Message::ServerStart => {
+            app.pending_server_join = false;
+            server_action(app, false)
+        }
+        Message::ServerStartAndJoin => {
+            app.pending_server_join = true;
+            server_action(app, false)
+        }
+        Message::ServerJoinNow => {
+            let address = format!("127.0.0.1:{}", app.config.server_port);
+            app.status = format!("正在加入服务器 {address} ...");
+            start_launch(
+                app,
+                Some(launcher::launch::QuickPlayTarget::Multiplayer(address)),
+            )
+        }
+        Message::ServerStop => {
+            if app.server_busy {
+                return Task::none();
+            }
+            app.server_busy = true;
+            app.status = "正在停止服务端...".to_string();
+            Task::perform(launcher::server::stop(), Message::ServerStopped)
+        }
+        Message::ServerInstalled(Ok(())) => {
+            app.server_busy = false;
+            app.status = "服务端已安装/校验完成".to_string();
+            Task::none()
+        }
+        Message::ServerInstalled(Err(e)) => {
+            app.server_busy = false;
+            app.status = format!("服务端安装失败: {}", e);
+            Task::none()
+        }
+        Message::ServerStarted(Ok(())) => {
+            app.server_busy = false;
+            app.server_running = true;
+            app.status = "服务端启动中...".to_string();
+            Task::none()
+        }
+        Message::ServerStarted(Err(e)) => {
+            app.server_busy = false;
+            app.server_running = false;
+            app.pending_server_join = false;
+            app.status = format!("服务端启动失败: {}", e);
+            Task::none()
+        }
+        Message::ServerStopped(Ok(())) => {
+            app.server_busy = false;
+            Task::none()
+        }
+        Message::ServerStopped(Err(e)) => {
+            app.server_busy = false;
+            app.status = format!("停止服务端失败: {}", e);
+            Task::none()
+        }
+        Message::OpenEula => Task::perform(
+            async move { open::that("https://aka.ms/MinecraftEULA").map_err(|e| e.to_string()) },
+            Message::OpenEulaDone,
+        ),
+        Message::OpenEulaDone(Ok(())) => Task::none(),
+        Message::OpenEulaDone(Err(e)) => {
+            app.status = format!("打开 EULA 失败: {}", e);
+            Task::none()
+        }
+        Message::EulaLoaded(Ok(doc)) => {
+            let first_load = app.eula_text.is_none();
+            app.eula_loading = false;
+            app.eula_error = None;
+            app.eula_source = Some(doc.summary());
+            app.eula_sha1 = Some(doc.sha1.clone());
+            app.eula_warning = doc.warning;
+            app.eula_text = Some(doc.text);
+            if first_load {
+                app.eula_scrolled_to_bottom = false;
+                app.eula_checked = false;
+            }
+            Task::none()
+        }
+        Message::EulaLoaded(Err(e)) => {
+            app.eula_loading = false;
+            app.eula_error = Some(e);
+            Task::none()
+        }
+        Message::EulaUpdateChecked(result) => handle_eula_update(app, result),
+        Message::EulaRetry => {
+            if app.eula_loading {
+                return Task::none();
+            }
+            app.eula_loading = true;
+            app.eula_error = None;
+            app.eula_scrolled_to_bottom = false;
+            app.eula_checked = false;
+            let config = app.config.clone();
+            Task::perform(
+                async move { launcher::eula::load_or_fetch(&config).await },
+                Message::EulaLoaded,
+            )
+        }
+        Message::EulaScrolled(at_bottom) => {
+            if at_bottom {
+                app.eula_scrolled_to_bottom = true;
+            }
+            Task::none()
+        }
+        Message::EulaChecked(checked) => {
+            if app.eula_scrolled_to_bottom {
+                app.eula_checked = checked;
+            }
+            Task::none()
+        }
+        Message::EulaAccept => accept_eula(app),
+        Message::EulaCancel => {
+            app.eula_required = false;
+            app.pending_action = None;
+            app.eula_checked = false;
+            app.status = "已取消当前操作，尚未同意 EULA".to_string();
+            Task::none()
+        }
+        Message::OpenServerFolder => {
+            let Some(version) = app.selected_version.as_ref() else {
+                app.status = "请先在「启动」页选择版本".to_string();
+                return Task::none();
+            };
+            let dir = launcher::server::server_dir(&app.config, &version.id);
+            Task::perform(
+                async move {
+                    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                    open::that(&dir).map_err(|e| e.to_string())
+                },
+                Message::OpenFolderDone,
+            )
+        }
+        Message::ToggleBrandTitle(on) => {
+            app.config.brand_title = on;
+            Task::none()
+        }
+        Message::BrandTextChanged(text) => {
+            app.config.brand_text = text;
+            Task::none()
+        }
+        Message::ToggleGameDefaults(on) => {
+            app.config.apply_game_defaults = on;
+            Task::none()
+        }
+        Message::ToggleDisableMultiplayer(on) => {
+            app.config.disable_multiplayer = on;
+            persist_config_task(app)
+        }
+        Message::ToggleDisableChat(on) => {
+            app.config.disable_chat = on;
+            persist_config_task(app)
+        }
+        Message::ToggleFullscreen(on) => {
+            app.config.fullscreen = on;
+            persist_config_task(app)
+        }
+        Message::WindowWidthChanged(text) => {
+            app.window_width_input = text;
+            if let Ok(width) = app.window_width_input.trim().parse::<u32>() {
+                if (320..=7680).contains(&width) {
+                    app.config.window_width = width;
+                    return persist_config_task(app);
+                }
+            }
+            Task::none()
+        }
+        Message::WindowHeightChanged(text) => {
+            app.window_height_input = text;
+            if let Ok(height) = app.window_height_input.trim().parse::<u32>() {
+                if (240..=4320).contains(&height) {
+                    app.config.window_height = height;
+                    return persist_config_task(app);
+                }
+            }
+            Task::none()
+        }
+        Message::GraphicsBackendSelected(backend) => {
+            app.config.graphics_backend = backend;
+            persist_config_task(app)
+        }
+        Message::RefreshMods => load_mods_task(app),
+        Message::ModsLoaded(root, mode, _)
+            if root != app.config.root_dir || mode != app.config.enhanced_experience =>
+        {
+            Task::none()
+        }
+        Message::ModsLoaded(_, _, Ok(mods)) => {
+            app.mods = mods;
+            Task::none()
+        }
+        Message::ModsLoaded(_, _, Err(e)) => {
+            app.status = format!("加载模组失败: {}", e);
+            Task::none()
+        }
+        Message::ToggleMod(file_name, enabled) => {
+            let Some(version) = app.mods_version.clone() else {
+                return Task::none();
+            };
+            let config = app.config.clone();
+            app.status = if enabled {
+                "正在启用模组...".to_string()
+            } else {
+                "正在禁用模组...".to_string()
+            };
+            Task::perform(
+                async move {
+                    let dir = launcher::mods::mods_dir(&config, &version);
+                    launcher::mods::set_enabled(&dir, &file_name, enabled)
+                },
+                Message::ModToggled,
+            )
+        }
+        Message::ModToggled(Ok(())) => {
+            app.status = "模组状态已更新（下次启动生效）".to_string();
+            load_mods_task(app)
+        }
+        Message::ModToggled(Err(e)) => {
+            app.status = format!("切换模组失败: {}", e);
+            Task::none()
+        }
+        Message::ModDeletePressed(file_name) => {
+            if app.pending_mod_delete.as_deref() == Some(file_name.as_str()) {
+                app.pending_mod_delete = None;
+                let Some(version) = app.mods_version.clone() else {
                     return Task::none();
                 };
+                let config = app.config.clone();
+                app.status = "正在移入模组回收站...".to_string();
                 Task::perform(
-                    async move { launcher::backup::delete(&version, &name) },
-                    Message::BackupDeleted,
+                    async move {
+                        let dir = launcher::mods::mods_dir(&config, &version);
+                        launcher::mods::delete_to_trash(&dir, &file_name)
+                            .map(|p| p.display().to_string())
+                    },
+                    Message::ModDeleted,
                 )
             } else {
-                app.pending_delete = Some(name);
-                app.pending_restore = None;
+                app.pending_mod_delete = Some(file_name);
+                app.status = "再次点击确认删除（移动到 mods/.deepslate-trash/）".to_string();
                 Task::none()
             }
         }
-        Message::BackupDeleted(Ok(())) => {
-            app.status = "备份已删除".to_string();
-            match app.selected_version.clone() {
-                Some(v) => load_backups(v.id),
-                None => Task::none(),
-            }
+        Message::ModDeleted(Ok(path)) => {
+            app.status = format!("已移入模组回收站: {path}");
+            load_mods_task(app)
         }
-        Message::BackupDeleted(Err(e)) => {
-            app.status = format!("删除备份失败: {}", e);
+        Message::ModDeleted(Err(e)) => {
+            app.status = format!("删除模组失败: {}", e);
             Task::none()
+        }
+        Message::EmptyModTrash => {
+            let Some(version) = app.mods_version.clone() else {
+                return Task::none();
+            };
+            let config = app.config.clone();
+            Task::perform(
+                async move {
+                    let dir = launcher::mods::mods_dir(&config, &version);
+                    launcher::mods::empty_trash(&dir)
+                },
+                Message::ModTrashEmptied,
+            )
+        }
+        Message::ModTrashEmptied(Ok(count)) => {
+            app.status = format!("已清空模组回收站（{count} 项）");
+            Task::none()
+        }
+        Message::ModTrashEmptied(Err(e)) => {
+            app.status = format!("清空模组回收站失败: {}", e);
+            Task::none()
+        }
+        Message::OpenModsFolder => {
+            let Some(version) = app.mods_version.as_ref() else {
+                return Task::none();
+            };
+            let dir = launcher::mods::mods_dir(&app.config, version);
+            Task::perform(
+                async move {
+                    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                    open::that(&dir).map_err(|e| e.to_string())
+                },
+                Message::OpenFolderDone,
+            )
         }
         Message::CoreEvent(event) => match event {
             CoreEvent::DownloadProgress(p) => {
-                if p.percent >= 100 {
-                    app.downloading = false;
-                }
                 app.progress = Some(p);
                 Task::none()
             }
@@ -703,15 +1958,114 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     GameState::Launching { .. } => {
                         app.launching = true;
                         app.game_running = true;
+                        app.enhanced_started_at = None;
+                        app.enhanced_startup_duration = None;
+                        app.enhanced_phase = None;
                     }
                     GameState::Running { .. } => {
                         app.launching = false;
                         app.game_running = true;
+                        if app.active_managed {
+                            let started = Instant::now();
+                            app.enhanced_started_at = Some(started);
+                            app.enhanced_startup_duration = None;
+                            app.enhanced_phase = Some(("Minecraft 进程启动".into(), started));
+                        }
                     }
                     GameState::Stopped { .. } => {
-                        app.launching = false;
-                        app.game_running = false;
+                        // The launch task releases the library lock after emitting this event.
+                        // Its completion message is the only safe point to refresh the map.
                     }
+                }
+                Task::none()
+            }
+            CoreEvent::BridgeState { state, message } => {
+                let phase = state
+                    .strip_prefix("phase_")
+                    .map(|phase| match phase {
+                        "client_starting" => "正在启动 Minecraft",
+                        "client_started" => "Minecraft 已启动",
+                        "preparing_instance" => "正在准备独立游戏实例",
+                        "resolving_components" => "正在检查 Fabric 与 Bridge 组件",
+                        "checking_game_files" => "正在检查并安装 Minecraft 文件",
+                        "validating_components" => "正在校验游戏与 Bridge 组件",
+                        "starting_client" => "正在启动 Minecraft 客户端",
+                        "resource_loading" => "正在加载游戏资源",
+                        "resource_finalizing" => "正在完成资源初始化",
+                        "localized_resources_ready" => "中文与字体已就绪",
+                        "connecting" => "正在连接服务器",
+                        "login_started" => "正在开始登录",
+                        "authenticating" => "正在验证身份",
+                        "server_configuring" => "正在应用服务器配置",
+                        "server_configured" => "服务器配置已就绪",
+                        "server_joined" => "正在进入服务器世界",
+                        "opening_world" => "正在打开世界",
+                        "creating_world" => "正在创建世界",
+                        "rules_applied" => "正在应用游戏规则",
+                        "world_loading" => "正在加载世界",
+                        "world_start_server" => "正在启动本地服务器",
+                        "world_prepare_spawn" => "正在准备出生区域",
+                        "world_initial_chunks" => "正在加载初始区块",
+                        "world_player_chunks" => "正在加载周边区块",
+                        "world_attached" => "正在准备客户端世界",
+                        "first_chunk" => "周边地形已开始加载",
+                        "ready" => "游戏已就绪",
+                        "world_ready" => "世界已就绪",
+                        "operation_failed" => "操作未能完成",
+                        _ => "",
+                    })
+                    .filter(|label| !label.is_empty());
+                app.status = if let Some(phase) = phase {
+                    match message {
+                        Some(progress) => format!("{phase}（{progress}）"),
+                        None => phase.to_string(),
+                    }
+                } else {
+                    match state.as_str() {
+                        "waiting_for_bridge" => "等待游戏桥接组件...".into(),
+                        "connected" => "桥接组件已连接，等待游戏加载...".into(),
+                        "ready" => "游戏已就绪，正在打开世界...".into(),
+                        "loading" => "正在加载世界...".into(),
+                        "entered" => "已进入世界".into(),
+                        "saving" => "正在保存并退出世界...".into(),
+                        "closed" => "世界已关闭，等待游戏退出...".into(),
+                        "failed" => format!("增强体验会话失败: {}", message.unwrap_or_default()),
+                        "update_failed" => format!(
+                            "更新失败，使用已验证的组件: {}",
+                            message.unwrap_or_default()
+                        ),
+                        _ => return Task::none(),
+                    }
+                };
+                let phase_label = phase.or_else(|| match state.as_str() {
+                    "waiting_for_bridge" => Some("等待游戏桥接组件"),
+                    "connected" => Some("桥接组件已连接"),
+                    "ready" => Some("游戏已就绪"),
+                    "loading" => Some("正在加载世界"),
+                    "entered" => Some("已进入世界"),
+                    "saving" => Some("正在保存并退出世界"),
+                    "closed" => Some("世界已关闭"),
+                    _ => None,
+                });
+                if app.enhanced_started_at.is_some() {
+                    if let Some(label) = phase_label {
+                        if app
+                            .enhanced_phase
+                            .as_ref()
+                            .is_none_or(|(current, _)| current != label)
+                        {
+                            app.enhanced_phase = Some((label.to_string(), Instant::now()));
+                        }
+                    }
+                }
+                if phase == Some("world_ready") || state == "entered" {
+                    if let Some(started) = app.enhanced_started_at.take() {
+                        app.enhanced_startup_duration = Some(started.elapsed());
+                    }
+                    app.enhanced_phase = None;
+                } else if state == "failed" {
+                    app.enhanced_started_at = None;
+                    app.enhanced_phase = None;
                 }
                 Task::none()
             }
@@ -728,8 +2082,653 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 }
                 Task::none()
             }
+            CoreEvent::ServerLog { is_stderr, line } => {
+                if app.server_logs.len() >= 2000 {
+                    app.server_logs.drain(0..500);
+                }
+                app.server_logs.push(if is_stderr {
+                    format!("[E] {line}")
+                } else {
+                    line
+                });
+                Task::none()
+            }
+            CoreEvent::ServerState(state) => match state {
+                launcher::events::ServerState::Starting { version } => {
+                    app.server_running = true;
+                    app.server_ready = false;
+                    app.status = format!("正在启动服务端 {version} ...");
+                    Task::none()
+                }
+                launcher::events::ServerState::Running { pid } => {
+                    app.server_running = true;
+                    app.server_ready = false;
+                    app.status = format!("服务端运行中（PID {pid}），等待就绪...");
+                    Task::none()
+                }
+                launcher::events::ServerState::Ready { port } => {
+                    app.server_running = true;
+                    app.server_ready = true;
+                    app.status = format!("服务端已就绪：加入地址 127.0.0.1:{port}");
+                    if app.pending_server_join {
+                        app.pending_server_join = false;
+                        start_launch(
+                            app,
+                            Some(launcher::launch::QuickPlayTarget::Multiplayer(format!(
+                                "127.0.0.1:{port}"
+                            ))),
+                        )
+                    } else {
+                        Task::none()
+                    }
+                }
+                launcher::events::ServerState::Stopped { exit_code } => {
+                    app.server_running = false;
+                    app.server_ready = false;
+                    app.server_busy = false;
+                    app.pending_server_join = false;
+                    app.status = format!("服务端已停止（退出码 {exit_code}）");
+                    Task::none()
+                }
+            },
         },
     }
+}
+
+/// 加载全局地图库。地图库与版本解耦，`instance/saves` 会链接到 `<root>/maps`。
+fn load_saves_task(app: &mut App) -> Task<Message> {
+    let config = app.config.clone();
+    let root = config.root_dir.clone();
+    app.pending_save_delete = None;
+    let pending_config = config.clone();
+    let pending_root = root.clone();
+    let worlds = Task::perform(
+        async move {
+            launcher::runtime::ensure(&config)?;
+            launcher::maps::list(&config)
+        },
+        move |result| Message::SavesLoaded(root.clone(), result),
+    );
+    let pending = Task::perform(
+        async move { launcher::maps::list_pending_creations(&pending_config) },
+        move |result| Message::PendingCreationsLoaded(pending_root.clone(), result),
+    );
+    Task::batch([worlds, pending])
+}
+
+fn import_map_task(config: AppConfig, path: std::path::PathBuf) -> Task<Message> {
+    Task::perform(
+        async move {
+            let map = launcher::maps::import_path(&config, &path)?;
+            Ok::<String, String>(format!("{} ({})", map.name, map.id))
+        },
+        Message::MapImported,
+    )
+}
+
+fn load_mods_task(app: &mut App) -> Task<Message> {
+    let selected = if app.config.enhanced_experience {
+        Some("26.3".to_string())
+    } else {
+        app.selected_version.as_ref().map(|v| v.id.clone())
+    };
+    let Some(version) = selected else {
+        app.mods.clear();
+        app.mods_version = None;
+        app.status = "请先在「启动」页选择版本".to_string();
+        return Task::none();
+    };
+    let config = app.config.clone();
+    let root = config.root_dir.clone();
+    let enhanced = config.enhanced_experience;
+    app.mods_version = Some(version.clone());
+    app.pending_mod_delete = None;
+    Task::perform(
+        async move {
+            let dir = launcher::mods::mods_dir(&config, &version);
+            launcher::mods::ensure_dir(&dir)?;
+            Ok(launcher::mods::list(&dir))
+        },
+        move |result| Message::ModsLoaded(root.clone(), enhanced, result),
+    )
+}
+
+fn persist_config_task(app: &App) -> Task<Message> {
+    let config = app.config.clone();
+    Task::perform(
+        async move { launcher::config::save(&config) },
+        Message::ConfigPersisted,
+    )
+}
+
+/// 打开主窗口内的 EULA 模态，并记住用户原本要执行的动作。
+fn show_eula_gate(app: &mut App, pending: PendingAction) -> Task<Message> {
+    if eula_is_accepted(app) {
+        return resume_pending_action(app, pending);
+    }
+
+    app.eula_required = true;
+    app.pending_action = Some(pending);
+    app.eula_scrolled_to_bottom = false;
+    app.eula_checked = false;
+    if app.eula_checking {
+        return Task::none();
+    }
+    if app.eula_text.is_some() {
+        return Task::none();
+    }
+    if app.eula_loading {
+        return Task::none();
+    }
+
+    app.eula_loading = true;
+    app.eula_error = None;
+    let config = app.config.clone();
+    Task::perform(
+        async move { launcher::eula::load_or_fetch(&config).await },
+        Message::EulaLoaded,
+    )
+}
+
+/// 标记文件是唯一事实源；每次真正执行启动/开服/建世界前重新读一次，
+/// 防止运行中删除 eula.txt 或切换根目录后继续使用旧的内存状态。
+fn eula_is_accepted(app: &mut App) -> bool {
+    let marker = launcher::eula::is_accepted(&app.config);
+    // 接受标记之外还要核对“接受时的正文哈希”和当前缓存正文。否则协议
+    // 更新检查把内存状态置为未接受后，下一次动作又会因为 eula.txt 仍在
+    // 而把旧同意重新当成有效。
+    let hash_matches = launcher::eula::accepted_sha1(&app.config)
+        .zip(launcher::eula::load_cached(&app.config).map(|doc| doc.sha1))
+        .map_or(true, |(accepted, current)| accepted == current);
+    let accepted = marker && hash_matches;
+    app.eula_accepted = accepted;
+    accepted
+}
+
+/// 启动后的协议更新检查结果。
+///
+/// - 未变化：继续启动期间被“检查中”挡下的动作；
+/// - 已变化：把新正文装进模态并强制重新阅读/勾选；
+/// - 检查失败：不把网络错误当作“协议未变”，但也不阻断已接受版本的离线使用，
+///   在状态栏留下提示，下次启动/重试时再检查。
+fn handle_eula_update(
+    app: &mut App,
+    result: Result<launcher::eula::EulaUpdate, String>,
+) -> Task<Message> {
+    app.eula_checking = false;
+    match result {
+        Ok(launcher::eula::EulaUpdate::NotAccepted) => {
+            app.eula_accepted = false;
+            app.eula_text = None;
+            app.eula_sha1 = None;
+            if app.pending_action.is_some() {
+                let pending = app.pending_action.take().unwrap_or(PendingAction::None);
+                show_eula_gate(app, pending)
+            } else {
+                Task::none()
+            }
+        }
+        Ok(launcher::eula::EulaUpdate::Unchanged) => {
+            app.eula_accepted = true;
+            app.eula_required = false;
+            let pending = app.pending_action.take().unwrap_or(PendingAction::None);
+            resume_pending_action(app, pending)
+        }
+        Ok(launcher::eula::EulaUpdate::Changed(doc)) => {
+            let summary = doc.summary();
+            app.eula_accepted = false;
+            app.eula_sha1 = Some(doc.sha1.clone());
+            app.eula_source = Some(summary);
+            app.eula_warning = Some(if let Some(warning) = doc.warning {
+                format!("协议已更新，需要重新阅读并同意。{warning}")
+            } else {
+                "协议已更新，需要重新阅读并同意。".to_string()
+            });
+            app.eula_text = Some(doc.text);
+            app.eula_error = None;
+            app.eula_loading = false;
+            app.eula_scrolled_to_bottom = false;
+            app.eula_checked = false;
+            app.eula_required = true;
+            app.status = "Minecraft EULA 已更新，请重新阅读并同意".to_string();
+            Task::none()
+        }
+        Err(error) => {
+            app.status = format!("无法检查 EULA 更新，将按已接受版本继续: {error}");
+            if app.eula_required {
+                app.eula_loading = false;
+                app.eula_error = Some(error);
+                Task::none()
+            } else {
+                let pending = app.pending_action.take().unwrap_or(PendingAction::None);
+                resume_pending_action(app, pending)
+            }
+        }
+    }
+}
+
+/// 写 `<root>/eula.txt`，然后继续被拦截的启动/开服/建世界动作。
+fn accept_eula(app: &mut App) -> Task<Message> {
+    if app.eula_text.is_none()
+        || app.eula_error.is_some()
+        || !app.eula_scrolled_to_bottom
+        || !app.eula_checked
+    {
+        return Task::none();
+    }
+    let Some(sha1) = app.eula_sha1.clone() else {
+        app.eula_error = Some("缺少 EULA 正文哈希，请重新获取后再同意".to_string());
+        return Task::none();
+    };
+    if let Err(error) = launcher::eula::accept_document(&app.config, &sha1) {
+        app.eula_error = Some(error);
+        return Task::none();
+    }
+
+    app.eula_accepted = true;
+    app.config.server_eula_accepted = true;
+    app.eula_required = false;
+    app.eula_checked = false;
+    app.status = "已同意 Minecraft EULA".to_string();
+    let pending = app.pending_action.take().unwrap_or(PendingAction::None);
+    Task::batch([
+        persist_config_task(app),
+        resume_pending_action(app, pending),
+    ])
+}
+
+fn resume_pending_action(app: &mut App, pending: PendingAction) -> Task<Message> {
+    match pending {
+        PendingAction::None => Task::none(),
+        PendingAction::Launch(quick_play) => start_launch(app, quick_play),
+        PendingAction::ServerInstall => server_action(app, true),
+        PendingAction::ServerStart => server_action(app, false),
+        PendingAction::CreateWorld => create_world_action(app),
+    }
+}
+
+/// 统一的启动入口：普通启动 / 快速进入存档 / 快速加入服务器。
+fn start_launch(
+    app: &mut App,
+    quick_play: Option<launcher::launch::QuickPlayTarget>,
+) -> Task<Message> {
+    start_launch_with_creation(app, quick_play, None)
+}
+
+fn start_launch_with_creation(
+    app: &mut App,
+    quick_play: Option<launcher::launch::QuickPlayTarget>,
+    creation: Option<launcher::bridge::ManagedTarget>,
+) -> Task<Message> {
+    let enhanced = app.config.enhanced_experience;
+    let managed_world = if enhanced {
+        if let Some(target) = creation.clone() {
+            Some(target)
+        } else {
+            match &quick_play {
+                Some(launcher::launch::QuickPlayTarget::Singleplayer(id)) => {
+                    Some(launcher::bridge::ManagedTarget::Open(id.clone()))
+                }
+                Some(launcher::launch::QuickPlayTarget::Multiplayer(address)) => {
+                    if app.config.disable_multiplayer {
+                        app.status = "当前已禁用多人游戏".into();
+                        return Task::none();
+                    }
+                    Some(launcher::bridge::ManagedTarget::JoinServer(
+                        address.trim().to_string(),
+                    ))
+                }
+                None => {
+                    app.page = Page::Maps;
+                    app.status = "请选择要进入的世界".into();
+                    return load_saves_task(app);
+                }
+                _ => {
+                    app.status = "增强体验暂不支持加入 Realm".into();
+                    return Task::none();
+                }
+            }
+        }
+    } else {
+        None
+    };
+    let version = match (enhanced, app.selected_version.clone()) {
+        (true, _) => None,
+        (false, Some(version)) => Some(version),
+        (false, None) => {
+            app.status = "请先选择一个版本".to_string();
+            return Task::none();
+        }
+    };
+    let Some(profile) = app.selected_profile.clone() else {
+        app.status = "请先选择或创建档案".to_string();
+        return Task::none();
+    };
+    let Some(java) = app.selected_java.clone() else {
+        app.status = "请先选择 Java 运行时".to_string();
+        return Task::none();
+    };
+    if app.fabric_installing || app.downloading {
+        app.status = "当前有下载/安装任务，请稍后再启动".to_string();
+        return Task::none();
+    }
+    if app.game_running || app.launching {
+        app.status = "游戏已在运行".to_string();
+        return Task::none();
+    }
+    if !eula_is_accepted(app) {
+        return show_eula_gate(app, PendingAction::Launch(quick_play));
+    }
+    if app.eula_checking {
+        app.pending_action = Some(PendingAction::Launch(quick_play));
+        app.status = "正在检查 Minecraft EULA 是否有更新...".to_string();
+        return Task::none();
+    }
+
+    let config = app.config.clone();
+    let mode = if enhanced {
+        launcher::runtime::RuntimeMode::Enhanced
+    } else {
+        launcher::runtime::RuntimeMode::Normal
+    };
+    let runtime = launcher::runtime::paths_for_mode(&app.config, mode);
+    let events = core_event_sender();
+
+    if app.config.log_window && app.log_writer.is_none() {
+        app.log_writer = spawn_log_window(app.dark_mode);
+    }
+
+    let branding = app
+        .config
+        .brand_title
+        .then(|| app.config.brand_text.clone())
+        .filter(|text| !text.trim().is_empty());
+    let selected_profile = profile.clone();
+    let active_id = managed_world
+        .as_ref()
+        .and_then(|target| target.id())
+        .map(str::to_string);
+    let mut opts = launcher::launch::LaunchOptions {
+        version: version.as_ref().map(|v| v.id.clone()).unwrap_or_default(),
+        game_dir: runtime.game_dir,
+        instance_dir: runtime.instance_dir,
+        map_config: Some(config.clone()),
+        username: profile.name,
+        uuid: profile.uuid,
+        runtime_dir: std::path::PathBuf::from(java.path),
+        auth_method: profile.auth_method,
+        access_token: profile.access_token,
+        download_concurrency: app.config.download_concurrency,
+        quick_play: if enhanced { None } else { quick_play.clone() },
+        managed_world,
+        branding,
+        apply_game_defaults: app.config.apply_game_defaults,
+        disable_multiplayer: app.config.disable_multiplayer,
+        disable_chat: app.config.disable_chat,
+        fullscreen: app.config.fullscreen,
+        window_width: app.config.window_width,
+        window_height: app.config.window_height,
+        graphics_backend: app.config.graphics_backend.clone(),
+    };
+
+    app.status = match &quick_play {
+        Some(launcher::launch::QuickPlayTarget::Singleplayer(id)) => {
+            format!("正在进入存档 {id} ...")
+        }
+        Some(launcher::launch::QuickPlayTarget::Multiplayer(address)) => {
+            format!("正在加入服务器 {address} ...")
+        }
+        Some(launcher::launch::QuickPlayTarget::Realms(id)) => {
+            format!("正在进入 Realm {id} ...")
+        }
+        None => format!(
+            "正在启动 {} ...",
+            version.as_ref().map(|v| v.id.as_str()).unwrap_or("26.3")
+        ),
+    };
+    app.launching = true;
+    app.game_running = true;
+    app.active_managed = enhanced;
+    app.progress = None;
+    app.active_map = match &quick_play {
+        Some(launcher::launch::QuickPlayTarget::Singleplayer(id)) => Some(id.clone()),
+        _ => active_id,
+    };
+    Task::perform(
+        async move {
+            let profile = launcher::profiles::load()?.current_profile(&selected_profile)?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let profile_needs_refresh = profile.needs_refresh(now);
+            if profile_needs_refresh {
+                let refresh = profile
+                    .refresh_token
+                    .as_deref()
+                    .filter(|token| !token.is_empty())
+                    .ok_or("在线凭据已过期，请重新登录")?;
+                let online = launcher::auth::refresh_login(refresh, &events).await?;
+                if online.uuid != profile.uuid {
+                    return Err("刷新后的账号与当前档案不一致，请重新登录".to_string());
+                }
+                let updated = launcher::profiles::upsert_online(online)?;
+                opts.access_token = updated.access_token;
+                opts.username = updated.name;
+            } else {
+                opts.access_token = profile.access_token;
+                opts.username = profile.name;
+            }
+            let _ = events
+                .send(CoreEvent::BridgeState {
+                    state: "phase_preparing_instance".into(),
+                    message: None,
+                })
+                .await;
+            launcher::runtime::ensure_for_mode(&config, mode)?;
+            if enhanced {
+                let installed = match launcher::enhanced::install(&config, events.clone()).await {
+                    Ok(installed) => installed,
+                    Err(update_error) => {
+                        let previous =
+                            launcher::enhanced::load_installed(&config).map_err(|_| {
+                                format!("安装增强体验失败，且没有可用的已安装组合: {update_error}")
+                            })?;
+                        let _ = events
+                            .send(CoreEvent::BridgeState {
+                                state: "update_failed".into(),
+                                message: Some(update_error),
+                            })
+                            .await;
+                        previous
+                    }
+                };
+                opts.version = installed.lock.version_id;
+            }
+            let _ = events
+                .send(CoreEvent::BridgeState {
+                    state: "phase_starting_client".into(),
+                    message: None,
+                })
+                .await;
+            launcher::launch::launch(opts, events)
+                .await
+                .map_err(|e| e.to_string())
+        },
+        Message::LaunchFinished,
+    )
+}
+
+/// 安装或启动本地服务端（install_only=true 时只下载/校验）。
+fn server_action(app: &mut App, install_only: bool) -> Task<Message> {
+    if app.server_busy {
+        return Task::none();
+    }
+    if !install_only && app.server_running {
+        app.status = "服务端已在运行".to_string();
+        return Task::none();
+    }
+    let version = if app.config.enhanced_experience {
+        launcher::enhanced::MINECRAFT.to_string()
+    } else if let Some(version) = &app.selected_version {
+        version.id.clone()
+    } else {
+        app.status = "请先在「启动」页选择版本".to_string();
+        return Task::none();
+    };
+    let Some(java) = app.selected_java.clone() else {
+        app.status = "请先在「启动」页选择 Java 运行时".to_string();
+        return Task::none();
+    };
+    let Ok(port) = app.server_port_input.trim().parse::<u16>() else {
+        app.status = "端口必须是 1-65535 的数字".to_string();
+        return Task::none();
+    };
+    if port == 0 {
+        app.status = "端口不能为 0".to_string();
+        return Task::none();
+    }
+    if !eula_is_accepted(app) {
+        return show_eula_gate(
+            app,
+            if install_only {
+                PendingAction::ServerInstall
+            } else {
+                PendingAction::ServerStart
+            },
+        );
+    }
+    if app.eula_checking {
+        app.pending_action = Some(if install_only {
+            PendingAction::ServerInstall
+        } else {
+            PendingAction::ServerStart
+        });
+        app.status = "正在检查 Minecraft EULA 是否有更新...".to_string();
+        return Task::none();
+    }
+
+    app.config.server_port = port;
+    let opts = launcher::server::ServerOptions::new(
+        &app.config,
+        &version,
+        std::path::PathBuf::from(java.path),
+        app.config.server_memory_mb,
+        port,
+        app.config.server_online_mode,
+        true,
+    );
+    let events = core_event_sender();
+    app.server_busy = true;
+    if install_only {
+        app.status = "正在安装/校验服务端...".to_string();
+        let action = Task::perform(
+            async move { launcher::server::install(&opts, &events).await.map(|_| ()) },
+            Message::ServerInstalled,
+        );
+        Task::batch([persist_config_task(app), action])
+    } else {
+        app.server_logs.clear();
+        app.status = format!("正在启动服务端（端口 {port}）...");
+        let action = Task::perform(
+            async move { launcher::server::start(opts, events).await },
+            Message::ServerStarted,
+        );
+        Task::batch([persist_config_task(app), action])
+    }
+}
+
+fn create_world_action(app: &mut App) -> Task<Message> {
+    if app.config.enhanced_experience {
+        if app.new_world_name.trim().is_empty() || app.new_world_name.trim().chars().count() > 64 {
+            app.status = "世界名称须为 1–64 个字符".into();
+            return Task::none();
+        }
+        if !eula_is_accepted(app) {
+            return show_eula_gate(app, PendingAction::CreateWorld);
+        }
+        if app.eula_checking {
+            app.pending_action = Some(PendingAction::CreateWorld);
+            app.status = "正在检查 Minecraft EULA 是否有更新...".into();
+            return Task::none();
+        }
+        let target = launcher::bridge::ManagedTarget::Create {
+            id: launcher::maps::new_id(),
+            name: app.new_world_name.trim().to_string(),
+            seed: app.new_world_seed.trim().to_string(),
+            mode: app.new_world_gamemode.clone(),
+            difficulty: app.new_world_difficulty.clone(),
+            preset: if app.new_world_flat { "flat" } else { "normal" }.into(),
+            cheats: app.new_world_cheats,
+            rules: launcher::bridge::WorldGameRules {
+                keep_inventory: app.new_world_keep_inventory,
+                mob_griefing: app.new_world_mob_griefing,
+                daylight_cycle: app.new_world_daylight_cycle,
+                weather_cycle: app.new_world_weather_cycle,
+                hostile_mobs: app.new_world_hostile_mobs,
+                pvp: app.new_world_pvp,
+            },
+        };
+        return start_launch_with_creation(app, None, Some(target));
+    }
+    if app.new_world_creating {
+        return Task::none();
+    }
+    if app.game_running {
+        app.status = "请先退出游戏再生成世界".to_string();
+        return Task::none();
+    }
+    let Some(version) = app.selected_version.clone() else {
+        app.status = "请先在「启动」页选择版本".to_string();
+        return Task::none();
+    };
+    let Some(java) = app.selected_java.clone() else {
+        app.status = "请先在「启动」页选择 Java 运行时".to_string();
+        return Task::none();
+    };
+    if !eula_is_accepted(app) {
+        return show_eula_gate(app, PendingAction::CreateWorld);
+    }
+    if app.eula_checking {
+        app.pending_action = Some(PendingAction::CreateWorld);
+        app.status = "正在检查 Minecraft EULA 是否有更新...".to_string();
+        return Task::none();
+    }
+    let name = app.new_world_name.trim().to_string();
+    if name.is_empty() {
+        app.status = "世界名称不能为空".to_string();
+        return Task::none();
+    }
+    let config = app.config.clone();
+    let spec = launcher::worldgen::WorldSpec {
+        name,
+        seed: app.new_world_seed.trim().to_string(),
+        world_type: if app.new_world_flat {
+            launcher::server::WorldType::Flat
+        } else {
+            launcher::server::WorldType::Normal
+        },
+        game_mode: app.new_world_gamemode.clone(),
+        cheats: app.new_world_cheats,
+    };
+    let events = core_event_sender();
+    app.new_world_creating = true;
+    app.status = "正在生成世界（首次会下载 server.jar，可能需要几分钟）...".to_string();
+    Task::perform(
+        async move {
+            launcher::worldgen::generate(
+                &config,
+                &version.id,
+                std::path::PathBuf::from(java.path),
+                config.server_memory_mb.clamp(1024, 4096),
+                &spec,
+                &events,
+            )
+            .await
+            .map(|map| map.id.clone())
+        },
+        Message::WorldCreated,
+    )
 }
 
 /// 拉起独立日志窗口子进程（deepslate-iced --log-window），返回向其 stdin 写行的 sender
@@ -780,24 +2779,46 @@ fn spawn_log_window(dark: bool) -> Option<mpsc::Sender<String>> {
     Some(tx)
 }
 
-/// 拉取指定版本的备份列表
-fn load_backups(version: String) -> Task<Message> {
-    Task::perform(async move { launcher::backup::list(&version) }, Message::BackupsLoaded)
+/// 扫描本地 versions/ 目录（磁盘 IO 很轻，放默认线程池即可）
+fn load_local_versions(game_dir: std::path::PathBuf) -> Task<Message> {
+    let source = game_dir.clone();
+    Task::perform(
+        async move { launcher::versions::scan(&game_dir) },
+        move |result| Message::LocalVersionsLoaded(source.clone(), result),
+    )
 }
 
-/// 从粘贴的回调 URL 中提取授权码，也接受直接粘贴的裸 code
-fn extract_auth_code(input: &str) -> Option<String> {
-    if let Some(pos) = input.find("code=") {
-        let rest = &input[pos + 5..];
-        let end = rest.find('&').unwrap_or(rest.len());
-        let code = rest[..end].trim();
-        if !code.is_empty() {
-            return Some(code.to_string());
-        }
-    }
-    let trimmed = input.trim();
-    (!trimmed.is_empty() && !trimmed.contains(' ') && !trimmed.contains("://"))
-        .then(|| trimmed.to_string())
+/// 把本地版本投影成 pick_list 可用的 VersionInfo（「已安装」tab 专用）
+fn local_choices(
+    local: &[launcher::versions::LocalVersion],
+) -> Vec<launcher::download::VersionInfo> {
+    local
+        .iter()
+        .map(|v| {
+            let loader = match v.kind.as_str() {
+                "fabric" => Some(format!(
+                    "Fabric {}",
+                    v.loader_version.clone().unwrap_or_default()
+                )),
+                "quilt" => Some(format!(
+                    "Quilt {}",
+                    v.loader_version.clone().unwrap_or_default()
+                )),
+                "forge" => Some("Forge".to_string()),
+                "neoforge" => Some("NeoForge".to_string()),
+                _ => None,
+            };
+            launcher::download::VersionInfo {
+                id: v.id.clone(),
+                kind: "installed".to_string(),
+                url: String::new(),
+                release_time: String::new(),
+                local: true,
+                loader,
+                game_version: v.has_loader().then(|| v.game_version.clone()),
+            }
+        })
+        .collect()
 }
 
 /// 在 blocking 线程池跑 Java 扫描（内部是子进程调用，会阻塞）
@@ -812,692 +2833,41 @@ async fn scan_java_async() -> Vec<launcher::launch::JavaInfo> {
 
 fn subscription(app: &App) -> Subscription<Message> {
     let mut subs = vec![Subscription::run(listen_core_events)];
-    // 入场动画进行中：16ms 滴答驱动重绘，动画结束自动停
+    // 入场动画进行中：8ms 滴答（约 125fps 上限），显示刷新率/vsync 仍会
+    // 决定实际帧率；动画只有 300ms，结束自动停，空闲不重绘。
     if app.page_anim.is_animating(app.now) {
-        subs.push(iced::time::every(Duration::from_millis(33)).map(Message::Tick));
+        subs.push(iced::time::every(Duration::from_millis(8)).map(Message::Tick));
+    } else if app.enhanced_started_at.is_some() {
+        subs.push(iced::time::every(Duration::from_millis(250)).map(Message::Tick));
     }
     Subscription::batch(subs)
 }
 
 fn listen_core_events() -> impl Stream<Item = Message> {
-    iced::stream::channel(64, |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
-        let mut rx = EVENT_BUS.subscribe();
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    if output.send(Message::CoreEvent(event)).await.is_err() {
-                        break;
+    iced::stream::channel(
+        64,
+        |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
+            let mut rx = EVENT_BUS.subscribe();
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        if output.send(Message::CoreEvent(event)).await.is_err() {
+                            break;
+                        }
                     }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => break,
             }
-        }
-    })
+        },
+    )
 }
 
 // ── 视图 ─────────────────────────────────────────────────
-
-fn view(app: &App) -> Element<'_, Message> {
-    let s = style::scheme_of(app.dark_mode);
-
-    let nav = |page: Page| {
-        let active = app.page == page;
-        button(text(page.label()).size(14))
-            .width(Length::Fill)
-            .padding(7.0)
-            .style(style::nav(active))
-            .on_press(Message::Navigate(page))
-    };
-
-    let busy = app.game_running || app.launching;
-    let status_dot = if busy { s.accent } else { s.text_faint };
-
-    let sidebar = container(
-        column![
-            row![
-                text("◆").size(18).color(s.accent),
-                column![
-                    text("Deepslate").size(17).color(s.text_primary),
-                    text("深板岩启动器").size(9).color(s.text_faint),
-                ],
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
-            Space::new().height(Length::from(20)),
-            nav(Page::Home),
-            nav(Page::Launch),
-            nav(Page::Settings),
-            Space::new().height(Length::Fill),
-            row![
-                text("●").size(10).color(status_dot),
-                text(game_state_label(app)).size(11).color(s.text_muted),
-            ]
-            .spacing(6),
-        ]
-        .spacing(4)
-        .padding(14),
-    )
-    .width(Length::from(168))
-    .height(Length::Fill)
-    .style(style::sidebar);
-
-    // 页面自身按窗口尺寸布局（网格/弹性区域），不使用外层滚动
-    let content = container(page_view(app))
-        .padding(24)
-        .width(Length::Fill)
-        .height(Length::Fill);
-
-    container(row![sidebar, content])
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(style::page)
-        .into()
-}
-
-/// 带标题的卡片区块
-fn section_card<'a>(
-    s: &style::Scheme,
-    title: &str,
-    body: Element<'a, Message>,
-) -> Element<'a, Message> {
-    container(
-        column![
-            text(title.to_string()).size(15).color(s.text_primary),
-            body,
-        ]
-        .spacing(10),
-    )
-    .padding(16)
-    .style(style::card)
-    .into()
-}
-
-/// 卡片入场：随页面进度 t 依次上浮淡入（delay 为错峰偏移，动画结束后零开销）
-fn enter<'a>(t: f32, delay: f32, element: Element<'a, Message>) -> Element<'a, Message> {
-    let ct = ((t - delay) / 0.5).clamp(0.0, 1.0);
-    if ct >= 1.0 {
-        return element;
-    }
-    let dy = (1.0 - ct) * 14.0;
-    let scale = 1.0 - (1.0 - ct) * 0.03;
-    float(element)
-        .scale(scale)
-        .translate(move |_viewport, _bounds| Vector::new(0.0, dy))
-        .into()
-}
-
-fn game_state_label(app: &App) -> &'static str {
-    if app.launching {
-        "游戏启动中..."
-    } else if app.game_running {
-        "游戏运行中"
-    } else {
-        "空闲"
-    }
-}
-
-fn page_view(app: &App) -> Element<'_, Message> {
-    let t = app.page_anim.interpolate(0.0f32, 1.0, app.now);
-    let page = match app.page {
-        Page::Launch => launch_page(app, t),
-        Page::Home => home_page(app, t),
-        Page::Settings => settings_page(app, t),
-    };
-    // 整页轻微上浮入场
-    if t >= 1.0 {
-        page
-    } else {
-        let dy = (1.0 - t) * 10.0;
-        float(page)
-            .translate(move |_viewport, _bounds| Vector::new(0.0, dy))
-            .into()
-    }
-}
-
-/// Microsoft 登录：系统浏览器授权 + 粘贴回调 URL（webview 无法自动捕获 code）
-fn ms_login_section<'a>(app: &'a App, s: &'static style::Scheme) -> Element<'a, Message> {
-    let login_btn = {
-        let b = button(text("完成登录").size(13)).padding(6.0);
-        if app.ms_logging_in || app.ms_code_input.trim().is_empty() {
-            b
-        } else {
-            b.style(style::primary).on_press(Message::MsLoginPressed)
-        }
-    };
-
-    column![
-        row![
-            button(text("打开微软登录页").size(12))
-                .padding(6.0)
-                .style(style::secondary)
-                .on_press(Message::MsAuthPressed),
-            text("浏览器完成授权后，把跳转到的 URL 粘贴到下面")
-                .size(11)
-                .color(s.text_faint),
-        ]
-        .spacing(8),
-        row![
-            text_input("粘贴回调 URL（含 code=...）", &app.ms_code_input)
-                .on_input(Message::MsCodeChanged)
-                .on_submit(Message::MsLoginPressed)
-                .style(style::text_field),
-            login_btn,
-        ]
-        .spacing(8),
-    ]
-    .spacing(8)
-    .into()
-}
-
-fn launch_page(app: &App, t: f32) -> Element<'_, Message> {
-    let s = style::scheme_of(app.dark_mode);
-    let tab_row = row(
-        [VersionTab::Release, VersionTab::Snapshot, VersionTab::Old]
-            .iter()
-            .map(|tab| {
-                let active = app.version_tab == *tab;
-                button(text(tab.label()).size(13))
-                    .padding(7.0)
-                    .style(style::nav(active))
-                    .on_press(Message::TabChanged(*tab))
-                    .into()
-            })
-            .collect::<Vec<_>>(),
-    )
-    .spacing(6);
-
-    let version_picker = pick_list(
-        app.filtered.as_slice(),
-        app.selected_version.as_ref(),
-        Message::VersionSelected,
-    )
-    .placeholder("选择版本")
-    .style(style::pick);
-
-    let profile_picker = pick_list(
-        app.profiles.clone(),
-        app.selected_profile.as_ref(),
-        Message::ProfileSelected,
-    )
-    .placeholder("选择档案")
-    .style(style::pick);
-
-    let new_profile_input = text_input("新建离线档案...", &app.new_profile_name)
-        .on_input(Message::NewProfileNameChanged)
-        .on_submit(Message::CreateProfile)
-        .style(style::text_field);
-
-    let java_picker = pick_list(
-        app.java_list.clone(),
-        app.selected_java.as_ref(),
-        Message::JavaSelected,
-    )
-    .placeholder("选择 Java")
-    .style(style::pick);
-
-    // 下载按钮
-    let download_btn = {
-        let b = button(text("下载版本")).padding(8.0);
-        if app.downloading || app.launching || app.selected_version.is_none() {
-            b
-        } else {
-            b.style(style::primary).on_press(Message::DownloadPressed)
-        }
-    };
-
-    // 启动/终止按钮
-    let launch_btn = if app.game_running || app.launching {
-        button(text("终止游戏"))
-            .padding(8.0)
-            .style(style::danger)
-            .on_press(Message::KillPressed)
-    } else {
-        let ready = app.selected_version.is_some()
-            && app.selected_profile.is_some()
-            && app.selected_java.is_some();
-        let b = button(text("启动游戏")).padding(8.0);
-        if ready {
-            b.style(style::primary).on_press(Message::LaunchPressed)
-        } else {
-            b
-        }
-    };
-
-    let progress_section: Element<Message> = match (&app.progress, app.downloading) {
-        (Some(p), _) => column![
-            progress_bar(0.0..=100.0, p.percent as f32).style(style::progress),
-            text(format!("{}/{}（{}%）— {}", p.current, p.total, p.percent, p.current_file))
-                .size(12)
-                .color(s.text_muted),
-        ]
-        .spacing(8)
-        .into(),
-        (None, true) => text("准备下载...").size(12).color(s.text_muted).into(),
-        (None, false) => Space::new().height(Length::from(1)).into(),
-    };
-
-    let selected_summary = row![
-        text("档案:").size(12).color(s.text_muted),
-        text(
-            app.selected_profile
-                .as_ref()
-                .map(|p| p.name.as_str())
-                .unwrap_or("未选择")
-        )
-        .size(12)
-        .color(s.text_primary),
-        text("版本:").size(12).color(s.text_muted),
-        text(
-            app.selected_version
-                .as_ref()
-                .map(|v| v.id.as_str())
-                .unwrap_or("未选择")
-        )
-        .size(12)
-        .color(s.text_primary),
-    ]
-    .spacing(8);
-
-    let version_card = section_card(s, "版本", column![tab_row, version_picker].spacing(10).into());
-    let profile_card = section_card(
-        s,
-        "档案",
-        column![
-            row![profile_picker, new_profile_input].spacing(8),
-            ms_login_section(app, s),
-        ]
-        .spacing(10)
-        .into(),
-    );
-    let java_card = section_card(
-        s,
-        "Java 运行时",
-        row![
-            java_picker,
-            button(text("重新扫描").size(13))
-                .padding(6.0)
-                .style(style::secondary)
-                .on_press(Message::RescanJava),
-        ]
-        .spacing(8)
-        .into(),
-    );
-    let actions_card = section_card(
-        s,
-        "启动",
-        column![
-            row![download_btn, launch_btn].spacing(12),
-            progress_section,
-            selected_summary,
-            text(app.status.as_str()).size(12).color(s.text_muted),
-        ]
-        .spacing(12)
-        .into(),
-    );
-
-    // 双栏网格：左（版本/档案）右（Java/启动），整页不滚动
-    let left = column![enter(t, 0.00, version_card), enter(t, 0.12, profile_card)]
-        .spacing(16)
-        .width(Length::Fill);
-    let right = column![enter(t, 0.24, java_card), enter(t, 0.36, actions_card)]
-        .spacing(16)
-        .width(Length::Fill);
-
-    column![
-        text("启动").size(28).color(s.text_primary),
-        text(format!(
-            "游戏目录: {}",
-            launcher::config::resolve_game_dir(&app.config).display()
-        ))
-        .size(11)
-        .color(s.text_faint),
-        rule::horizontal(1.0).style(style::rule_style),
-        row![left, right].spacing(16),
-    ]
-    .spacing(16)
-    .height(Length::Fill)
-    .into()
-}
-
-// ── 首页 ─────────────────────────────────────────────────
-
-fn info_row<'a>(s: &style::Scheme, label: &'a str, value: String) -> Element<'a, Message> {
-    row![
-        text(label).size(13).color(s.text_muted),
-        text(value).size(13).color(s.text_primary),
-    ]
-    .spacing(8)
-    .into()
-}
-
-fn home_page(app: &App, t: f32) -> Element<'_, Message> {
-    let s = style::scheme_of(app.dark_mode);
-
-    let profile_line = info_row(s, 
-        "档案:",
-        app.selected_profile
-            .as_ref()
-            .map(|p| {
-                format!(
-                    "{}（{}）",
-                    p.name,
-                    if p.is_online() { "在线" } else { "离线" }
-                )
-            })
-            .unwrap_or_else(|| "未选择".to_string()),
-    );
-    let version_line = info_row(s, 
-        "版本:",
-        app.selected_version
-            .as_ref()
-            .map(|v| v.id.clone())
-            .unwrap_or_else(|| "未选择".to_string()),
-    );
-    let java_line = info_row(s, 
-        "Java:",
-        app.selected_java
-            .as_ref()
-            .map(|j| j.version.clone())
-            .unwrap_or_else(|| "未找到".to_string()),
-    );
-    let state_line = info_row(s, "游戏:", game_state_label(app).to_string());
-    let root_line = info_row(s, "根目录:", app.config.root_dir.clone());
-
-    let status_card = section_card(
-        s,
-        "当前状态",
-        column![
-            profile_line,
-            version_line,
-            java_line,
-            state_line,
-            root_line,
-        ]
-        .spacing(6)
-        .into(),
-    );
-
-    let launch_btn = if app.game_running || app.launching {
-        button(text("终止游戏"))
-            .padding(8.0)
-            .style(style::danger)
-            .on_press(Message::KillPressed)
-    } else {
-        let b = button(text("启动游戏")).padding(8.0);
-        let ready = app.selected_version.is_some() && app.selected_profile.is_some()
-            && app.selected_java.is_some();
-        if ready {
-            b.style(style::primary).on_press(Message::LaunchPressed)
-        } else {
-            b
-        }
-    };
-
-    let download_btn = {
-        let b = button(text("下载当前版本")).padding(8.0);
-        if app.downloading || app.selected_version.is_none() {
-            b
-        } else {
-            b.style(style::primary).on_press(Message::DownloadPressed)
-        }
-    };
-
-    column![
-        text("首页").size(28).color(s.text_primary),
-        rule::horizontal(1.0).style(style::rule_style),
-        enter(t, 0.0, status_card),
-        enter(t, 0.12, row![launch_btn, download_btn,].spacing(12).into()),
-        text("提示：版本 / 档案 / Java 在「启动」页选择；目录与隔离选项在「设置」页。")
-            .size(12)
-            .color(s.text_faint),
-        text(app.status.as_str()).size(12).color(s.text_muted),
-    ]
-    .spacing(16)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
-}
-
-// ── 设置页 ───────────────────────────────────────────────
-
-fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
-    let s = style::scheme_of(app.dark_mode);
-    let config_path = launcher::config::config_path()
-        .map(|p| p.join("config.json").display().to_string())
-        .unwrap_or_else(|e| e);
-    let game_dir = launcher::config::resolve_game_dir(&app.config).display().to_string();
-    let saves_dir = format!("{}/saves", app.config.root_dir);
-    let versions_dir = if app.config.version_isolation {
-        format!("{}/versions", app.config.root_dir)
-    } else {
-        format!("{}/game/versions", app.config.root_dir)
-    };
-
-    // 存档备份区块（针对当前选中版本）
-    let backup_section: Element<Message> = match &app.selected_version {
-        Some(version) => {
-            let game_busy = app.game_running || app.launching;
-            let create_btn = {
-                let b = button(text("创建备份")).padding(8.0);
-                if game_busy {
-                    b
-                } else {
-                    b.style(style::primary).on_press(Message::BackupCreatePressed)
-                }
-            };
-
-            let saves_src = launcher::backup::version_saves_dir(&app.config, &version.id);
-            let list: Element<Message> = if app.backups.is_empty() {
-                text("暂无备份").size(12).color(s.text_muted).into()
-            } else {
-                let rows = app
-                    .backups
-                    .iter()
-                    .map(|name| {
-                        let restoring = app.pending_restore.as_deref() == Some(name.as_str());
-                        let deleting = app.pending_delete.as_deref() == Some(name.as_str());
-                        let restore_btn = {
-                            let b = button(text(if restoring {
-                                "确认恢复？"
-                            } else {
-                                "恢复"
-                            })
-                            .size(12))
-                            .padding(5.0);
-                            let b = if restoring {
-                                b.style(style::danger)
-                            } else {
-                                b.style(style::secondary)
-                            };
-                            if game_busy {
-                                b
-                            } else {
-                                b.on_press(Message::BackupRestorePressed(name.clone()))
-                            }
-                        };
-                        let delete_btn = {
-                            let b = button(text(if deleting { "确认删除？" } else { "删除" }).size(12))
-                                .padding(5.0);
-                            if deleting {
-                                b.style(style::danger)
-                            } else {
-                                b.style(style::secondary)
-                            }
-                            .on_press(Message::BackupDeletePressed(name.clone()))
-                        };
-                        row![
-                            text(name.clone()).size(12),
-                            Space::new().width(Length::Fill),
-                            restore_btn,
-                            delete_btn,
-                        ]
-                        .spacing(6)
-                        .into()
-                    })
-                    .collect::<Vec<_>>();
-                column(rows).spacing(6).into()
-            };
-
-            column![
-                row![
-                    text(format!("存档备份 — {}", version.id)).size(15).color(s.text_primary),
-                    Space::new().width(Length::Fill),
-                    create_btn,
-                ]
-                .spacing(8)
-                .align_y(iced::Alignment::Center),
-                text(format!("源目录: {}", saves_src.display())).size(11).color(s.text_muted),
-                // 弹性列表区域：只在备份条目过多或窗口较小时出现内部滚动
-                scrollable(list).height(Length::Fill).width(Length::Fill),
-                if game_busy {
-                    text("游戏运行中，恢复/备份已禁用").size(11).color(s.text_muted)
-                } else {
-                    text("恢复会覆盖当前存档（自动保留最近 5 份备份）").size(11).color(s.text_muted)
-                },
-            ]
-            .spacing(8)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-        }
-        None => column![
-            text("存档备份").size(15).color(s.text_primary),
-            text("请先在「启动」页选择一个版本").size(12).color(s.text_muted),
-        ]
-        .spacing(6)
-        .into(),
-    };
-
-    const CONCURRENCY: [usize; 6] = [4, 8, 16, 32, 64, 128];
-    let concurrency_picker = pick_list(
-        CONCURRENCY.to_vec(),
-        CONCURRENCY
-            .iter()
-            .find(|&&c| c == app.config.download_concurrency),
-        Message::ConcurrencySelected,
-    )
-    .placeholder("并发数")
-    .style(style::pick);
-
-    let reset_btn = if app.confirm_reset {
-        button(text("确认重置？（再点一次执行）"))
-            .padding(8.0)
-            .style(style::danger)
-            .on_press(Message::ResetAllPressed)
-    } else {
-        button(text("重置所有配置"))
-            .padding(8.0)
-            .style(style::danger)
-            .on_press(Message::ResetAllPressed)
-    };
-
-    let appearance_card = section_card(
-        s,
-        "外观",
-        column![
-            checkbox(app.dark_mode)
-                .label("暗色模式（牛皮纸黄 × 石板灰）")
-                .on_toggle(Message::ToggleDarkMode)
-                .size(13)
-                .style(style::checkbox_style),
-            checkbox(app.config.log_window)
-                .label("启动游戏时打开独立日志窗口（stdout/stderr，超出 2000 行自动压缩）")
-                .on_toggle(Message::ToggleLogWindow)
-                .size(13)
-                .style(style::checkbox_style),
-        ]
-        .spacing(10)
-        .into(),
-    );
-    // 常规：根目录 + 下载并发数合并为一张卡
-    let general_card = section_card(
-        s,
-        "常规",
-        column![
-            text_input("根目录，如 /home/xxx/Games/ObsidianLauncher", &app.config.root_dir)
-                .on_input(Message::RootDirChanged)
-                .style(style::text_field),
-            row![
-                text("下载并发数").size(13).color(s.text_muted),
-                concurrency_picker,
-            ]
-            .spacing(10)
-            .align_y(iced::Alignment::Center),
-        ]
-        .spacing(10)
-        .into(),
-    );
-    let isolation_card = section_card(
-        s,
-        "目录隔离",
-        column![
-            checkbox(app.config.version_isolation)
-                .label("版本隔离（每个版本独立实例目录）")
-                .on_toggle(Message::ToggleVersionIsolation)
-                .size(13)
-                .style(style::checkbox_style),
-            checkbox(app.config.saves_isolation)
-                .label("存档隔离（每版本独立 saves，符号链接实现）")
-                .on_toggle(Message::ToggleSavesIsolation)
-                .size(13)
-                .style(style::checkbox_style),
-        ]
-        .spacing(10)
-        .into(),
-    );
-    let dirs_card = section_card(
-        s,
-        "实际目录",
-        column![
-            text(format!("配置文件: {}", config_path)).size(12).color(s.text_muted),
-            text(format!("游戏目录: {}", game_dir)).size(12).color(s.text_muted),
-            text(format!("存档目录: {}", saves_dir)).size(12).color(s.text_muted),
-            text(format!("版本目录: {}", versions_dir)).size(12).color(s.text_muted),
-        ]
-        .spacing(5)
-        .into(),
-    );
-    // 备份卡：弹性填充剩余高度，列表过长时只在卡内滚动
-    let backup_card: Element<Message> = container(backup_section)
-        .padding(16)
-        .style(style::card)
-        .height(Length::Fill)
-        .width(Length::Fill)
-        .into();
-
-    // 2×2 网格 + 底部弹性备份区，整页不滚动
-    let grid_left = column![enter(t, 0.00, general_card), enter(t, 0.10, appearance_card)]
-        .spacing(16)
-        .width(Length::Fill);
-    let grid_right = column![enter(t, 0.20, isolation_card), enter(t, 0.30, dirs_card)]
-        .spacing(16)
-        .width(Length::Fill);
-
-    column![
-        text("设置").size(28).color(s.text_primary),
-        rule::horizontal(1.0).style(style::rule_style),
-        row![grid_left, grid_right].spacing(16),
-        enter(t, 0.40, backup_card),
-        row![
-            button(text("保存设置"))
-                .padding(8.0)
-                .style(style::primary)
-                .on_press(Message::SaveSettings),
-            reset_btn,
-        ]
-        .spacing(12),
-        text("保存时会同时记录当前选中的档案与 Java 路径。重置会删除 config.json 与 profiles.json（游戏文件不受影响）。")
-            .size(12)
-            .color(s.text_faint),
-    ]
-    .spacing(16)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
-}
-
-// ── 入口 ─────────────────────────────────────────────────
+mod views;
+use views::view;
+mod cli;
+use cli::*;
 
 fn main() -> iced::Result {
     let args: Vec<String> = std::env::args().collect();
@@ -1506,10 +2876,59 @@ fn main() -> iced::Result {
         let dark = !args.iter().any(|a| a == "--light");
         return log_window::run(dark);
     }
+    if args.iter().any(|a| a == "--install-fabric") {
+        std::process::exit(run_cli_install_fabric(&args));
+    }
+    if args.iter().any(|a| a == "--print-command") {
+        std::process::exit(run_cli_print_command(&args));
+    }
+    if args.iter().any(|a| a == "--launch") {
+        std::process::exit(run_cli_launch(&args));
+    }
+    if args.iter().any(|a| a == "--list-saves") {
+        std::process::exit(run_cli_list_saves(&args));
+    }
+    if args.iter().any(|a| a == "--list-maps") {
+        std::process::exit(run_cli_list_maps(&args));
+    }
+    if args.iter().any(|a| {
+        a == "--import-map"
+            || a == "--export-map"
+            || a == "--trash-map"
+            || a == "--backup-map"
+            || a == "--list-map-backups"
+            || a == "--restore-map"
+    }) {
+        std::process::exit(run_cli_map_op(&args));
+    }
+    if args.iter().any(|a| a == "--generate-map") {
+        std::process::exit(run_cli_generate_map(&args));
+    }
+    if args.iter().any(|a| a == "--list-mods") {
+        std::process::exit(run_cli_list_mods(&args));
+    }
+    if args.iter().any(|a| a == "--host-server") {
+        std::process::exit(run_cli_host_server(&args));
+    }
+    if args.iter().any(|a| a == "--create-world") {
+        std::process::exit(run_cli_create_world(&args));
+    }
+    if args
+        .iter()
+        .any(|a| a == "--rename-save" || a == "--copy-save" || a == "--trash-save")
+    {
+        std::process::exit(run_cli_save_op(&args));
+    }
 
     iced::application(App::boot, update, view)
         .title(|_app: &App| "深板岩启动器".to_string())
-        .theme(|app: &App| if app.dark_mode { style::theme_dark() } else { style::theme_light() })
+        .theme(|app: &App| {
+            if app.dark_mode {
+                style::theme_dark()
+            } else {
+                style::theme_light()
+            }
+        })
         .subscription(subscription)
         .window(iced::window::Settings {
             min_size: Some(Size::new(900.0, 560.0)),
@@ -1530,6 +2949,204 @@ mod switch_perf {
     use std::hint::black_box;
     use std::time::Duration;
 
+    #[test]
+    fn enhanced_launch_without_target_opens_world_library() {
+        let mut app = make_app(1);
+        app.config.enhanced_experience = true;
+        app.selected_version = None;
+        let _ = update(&mut app, Message::LaunchPressed);
+        assert_eq!(app.page, Page::Maps);
+        assert!(!app.game_running);
+    }
+
+    #[test]
+    fn disabling_enhanced_mode_keeps_other_version_download_available() {
+        let mut app = make_app(4);
+        app.config.enhanced_experience = true;
+        let manifest = app.versions.clone();
+        let _ = update(&mut app, Message::VersionsLoaded(Ok(manifest)));
+        assert_eq!(app.releases.len(), 3);
+        assert_eq!(app.filtered.len(), 3);
+
+        let other_release = app.releases[2].clone();
+        let _ = update(&mut app, Message::VersionSelected(other_release.clone()));
+        let selected_id = app.selected_version.as_ref().unwrap().id.clone();
+        app.version_tab = VersionTab::Installed;
+
+        let _ = update(&mut app, Message::ToggleEnhancedExperience(false));
+        assert!(!app.config.enhanced_experience);
+        assert_eq!(app.version_tab, VersionTab::Release);
+        assert_eq!(
+            app.selected_version.as_ref().map(|v| v.id.as_str()),
+            Some(selected_id.as_str())
+        );
+
+        let _download_task = update(&mut app, Message::DownloadPressed);
+        assert!(app.downloading);
+        assert!(app.status.contains(&selected_id));
+    }
+
+    #[test]
+    fn switching_modes_discards_stale_mod_results() {
+        let mut app = make_app(1);
+        let root = app.config.root_dir.clone();
+        app.mods_version = Some("normal".into());
+        let _ = update(&mut app, Message::ToggleEnhancedExperience(true));
+        assert!(app.mods_version.is_none());
+        let _ = update(
+            &mut app,
+            Message::ModsLoaded(root, false, Err("stale".into())),
+        );
+        assert!(!app.status.contains("stale"));
+    }
+
+    #[test]
+    fn running_game_blocks_pending_world_recovery() {
+        let mut app = make_app(1);
+        app.game_running = true;
+        let _ = update(&mut app, Message::RecoverCreation("pending".into()));
+        assert!(app.status.contains("退出游戏"));
+    }
+
+    #[test]
+    fn unrelated_complete_progress_does_not_unlock_client_download() {
+        let mut app = make_app(1);
+        app.downloading = true;
+        let event = launcher::download::DownloadProgress {
+            current: 1,
+            total: 1,
+            percent: 100,
+            current_file: "server".into(),
+        };
+        let _ = update(
+            &mut app,
+            Message::CoreEvent(CoreEvent::DownloadProgress(event)),
+        );
+        assert!(app.downloading);
+    }
+
+    #[test]
+    fn download_press_does_not_start_second_download() {
+        let mut app = make_app(1);
+        app.downloading = true;
+        app.status = "original".into();
+        let _ = update(&mut app, Message::DownloadPressed);
+        assert!(app.downloading);
+        assert!(app.status.contains("下载"));
+        assert!(!app.status.contains("正在下载 1.20."));
+    }
+
+    #[test]
+    fn running_game_prevents_map_delete_confirmation() {
+        let mut app = make_app(1);
+        app.game_running = true;
+        app.pending_save_delete = Some("world".into());
+        let _ = update(&mut app, Message::SaveDeletePressed("world".into()));
+        assert!(!app.status.contains("正在移入回收站"));
+    }
+
+    #[test]
+    fn kill_request_does_not_claim_game_has_exited() {
+        let mut app = make_app(1);
+        app.game_running = true;
+        let _ = update(&mut app, Message::KillFinished(Ok(())));
+        assert!(app.game_running);
+    }
+
+    #[test]
+    fn stopped_event_keeps_active_map_until_launch_task_finishes() {
+        let mut app = make_app(1);
+        app.game_running = true;
+        app.active_map = Some("world".into());
+        let _ = update(
+            &mut app,
+            Message::CoreEvent(CoreEvent::GameState(GameState::Stopped { exit_code: 0 })),
+        );
+        assert_eq!(app.active_map.as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn saved_default_profile_is_restored() {
+        let mut app = make_app(2);
+        let profiles = app.profiles.clone();
+        app.config.last_profile = Some(profiles[1].name.clone());
+        let store = launcher::ProfileStore {
+            profiles: profiles.clone(),
+            last_used: Some(profiles[0].name.clone()),
+        };
+        let _ = update(&mut app, Message::ProfilesLoaded(Ok(store)));
+        assert_eq!(
+            app.selected_profile.as_ref().unwrap().name,
+            profiles[1].name
+        );
+    }
+
+    #[test]
+    fn cancelling_eula_clears_pending_action() {
+        let mut app = make_app(1);
+        app.eula_required = true;
+        app.pending_action = Some(PendingAction::ServerStart);
+        let _ = update(&mut app, Message::EulaCancel);
+        assert!(!app.eula_required);
+        assert!(app.pending_action.is_none());
+    }
+
+    #[test]
+    fn root_change_clears_old_root_state_and_ignores_late_saves() {
+        let mut app = make_app(1);
+        let old_root = app.config.root_dir.clone();
+        app.local_choices = app.filtered.clone();
+        app.selected_version = app.local_choices.first().cloned();
+        let _ = update(&mut app, Message::RootDirChanged("new-root".into()));
+        assert!(app.local_choices.is_empty());
+        assert!(app.selected_version.is_none());
+        let _ = update(
+            &mut app,
+            Message::SavesLoaded(old_root, Err("old response".into())),
+        );
+        assert!(!app.status.contains("old response"));
+    }
+
+    #[test]
+    fn root_change_blocks_actions_until_restart() {
+        let mut app = make_app(1);
+        let _ = update(&mut app, Message::RootDirChanged("new-root".into()));
+        let _ = update(&mut app, Message::SaveDeletePressed("world".into()));
+        assert!(app.pending_save_delete.is_none());
+        assert!(app.status.contains("重新启动"));
+    }
+
+    #[test]
+    fn profile_creation_requires_saved_root_configuration() {
+        let mut app = make_app(1);
+        app.new_profile_name = "Steve".into();
+        app.root_changed = true;
+        let _ = update(&mut app, Message::CreateProfile);
+        assert!(app.status.contains("重新启动"));
+    }
+
+    #[test]
+    fn map_trash_requires_second_confirmation() {
+        let mut app = make_app(1);
+        let _ = update(&mut app, Message::EmptyTrash);
+        assert!(app.status.contains("再次"));
+    }
+
+    #[test]
+    fn opening_world_requires_explicit_backup_and_version_confirmation() {
+        let mut app = make_app(1);
+        let _ = update(&mut app, Message::SaveEnter("world".into()));
+        assert_eq!(app.pending_world_enter.as_deref(), Some("world"));
+        assert!(app.status.contains("再次"));
+    }
+
+    #[test]
+    fn launch_and_settings_views_expose_scrollable_content() {
+        assert!(views::page_requires_outer_scroll(Page::Launch));
+        assert!(views::page_requires_outer_scroll(Page::Settings));
+        assert!(!views::page_requires_outer_scroll(Page::Maps));
+    }
+
     fn make_app(n_versions: usize) -> App {
         let versions: Vec<launcher::download::VersionInfo> = (0..n_versions)
             .map(|i| launcher::download::VersionInfo {
@@ -1537,6 +3154,9 @@ mod switch_perf {
                 kind: if i % 5 == 0 { "snapshot" } else { "release" }.to_string(),
                 url: format!("https://example.com/v{}.json", i),
                 release_time: "2026-01-01T00:00:00Z".to_string(),
+                local: false,
+                loader: None,
+                game_version: None,
             })
             .collect();
         let selected = versions.first().cloned();
@@ -1577,13 +3197,74 @@ mod switch_perf {
             progress: None,
             launching: false,
             game_running: false,
+            active_managed: false,
+            enhanced_started_at: None,
+            enhanced_startup_duration: None,
+            enhanced_phase: None,
             ms_code_input: String::new(),
             ms_logging_in: false,
-            backups: (0..6).map(|i| format!("2026-10-2{}_12-00-00", i)).collect(),
-            pending_restore: None,
-            pending_delete: None,
+            ms_auth_session: None,
             confirm_reset: false,
+            confirm_empty_trash: false,
+            root_changed: false,
             log_writer: None,
+            local_versions: Vec::new(),
+            local_choices: Vec::new(),
+            releases: Vec::new(),
+            fabric_game: None,
+            fabric_loaders: Vec::new(),
+            fabric_loader: None,
+            fabric_loading: false,
+            fabric_installing: false,
+            pending_select: None,
+            saves: Vec::new(),
+            pending_creations: Vec::new(),
+            map_import_path: String::new(),
+            pending_map_restore: None,
+            active_map: None,
+            renaming_save: None,
+            save_name_input: String::new(),
+            pending_save_delete: None,
+            pending_world_enter: None,
+            server_address: String::new(),
+            server_profile_name: String::new(),
+            server_ping_status: HashMap::new(),
+            server_running: false,
+            server_ready: false,
+            server_busy: false,
+            server_logs: Vec::new(),
+            server_port_input: "25565".to_string(),
+            pending_server_join: false,
+            new_world_name: "新的世界".to_string(),
+            new_world_seed: String::new(),
+            new_world_flat: false,
+            new_world_cheats: false,
+            new_world_gamemode: "survival".to_string(),
+            new_world_difficulty: "normal".to_string(),
+            new_world_keep_inventory: false,
+            new_world_mob_griefing: true,
+            new_world_daylight_cycle: true,
+            new_world_weather_cycle: true,
+            new_world_hostile_mobs: true,
+            new_world_pvp: true,
+            new_world_creating: false,
+            window_width_input: "1280".to_string(),
+            window_height_input: "720".to_string(),
+            eula_accepted: true,
+            eula_sha1: None,
+            eula_checking: false,
+            eula_required: false,
+            eula_text: None,
+            eula_source: None,
+            eula_warning: None,
+            eula_loading: false,
+            eula_error: None,
+            eula_scrolled_to_bottom: false,
+            eula_checked: false,
+            pending_action: None,
+            mods: Vec::new(),
+            mods_version: None,
+            pending_mod_delete: None,
         };
         app.refilter();
         app
@@ -1671,12 +3352,30 @@ mod switch_perf {
         println!("┌─ 页面切换性能剖析（debug 构建, µs/次）────────────────");
         println!("│ Navigate update (800 版本)          {:>10.1}", nav_big);
         println!("│ Navigate update (10 版本)           {:>10.1}", nav_small);
-        println!("│ 动画中每帧 update+view·启动页(800)  {:>10.1}（最差 {:.1}）", anim_launch_big, anim_launch_big_max);
-        println!("│ 动画中每帧 update+view·启动页(10)   {:>10.1}", anim_launch_small);
-        println!("│ 动画中每帧 update+view·设置页(800)  {:>10.1}", anim_settings_big);
-        println!("│ 动画中每帧 update+view·首页(800)    {:>10.1}", anim_home_big);
-        println!("│ 空闲每帧 update+view·启动页(800)    {:>10.1}", idle_launch_big);
-        println!("│ 空闲每帧 update+view·设置页(800)    {:>10.1}", idle_settings_big);
+        println!(
+            "│ 动画中每帧 update+view·启动页(800)  {:>10.1}（最差 {:.1}）",
+            anim_launch_big, anim_launch_big_max
+        );
+        println!(
+            "│ 动画中每帧 update+view·启动页(10)   {:>10.1}",
+            anim_launch_small
+        );
+        println!(
+            "│ 动画中每帧 update+view·设置页(800)  {:>10.1}",
+            anim_settings_big
+        );
+        println!(
+            "│ 动画中每帧 update+view·首页(800)    {:>10.1}",
+            anim_home_big
+        );
+        println!(
+            "│ 空闲每帧 update+view·启动页(800)    {:>10.1}",
+            idle_launch_big
+        );
+        println!(
+            "│ 空闲每帧 update+view·设置页(800)    {:>10.1}",
+            idle_settings_big
+        );
         println!("│ refilter() 重算（仅 tab 切换时）(800){:>10.1}", fv_big);
         println!("│ subscription() 求值                 {:>10.1}", sub_cost);
         println!("└──────────────────────────────────────────────────────");
@@ -1711,5 +3410,16 @@ mod switch_perf {
             "动画应在 450ms 后结束，但 1s 后仍在进行"
         );
         assert!(ticks <= 30, "动画滴答帧数异常: {}", ticks);
+    }
+
+    #[test]
+    fn eula_modal_builds_with_long_text() {
+        let mut app = make_app(2);
+        app.eula_required = true;
+        app.eula_text = Some("EULA line 1\nEULA line 2\n".repeat(400));
+        app.eula_source = Some("https://www.minecraft.net/en-us/eula".to_string());
+        app.eula_scrolled_to_bottom = true;
+        app.eula_checked = true;
+        let _ = view(&app);
     }
 }

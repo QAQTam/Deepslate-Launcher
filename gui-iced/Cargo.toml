@@ -16,3 +16,4 @@ iced = { version = "0.14", features = ["tokio"] }
 tokio = { version = "1", features = ["sync", "rt-multi-thread"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 open = "5"
+rfd = "0.17"
