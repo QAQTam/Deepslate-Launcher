@@ -66,7 +66,6 @@ enum Page {
     Maps,
     Server,
     Mods,
-    Advanced,
     Settings,
 }
 
@@ -79,7 +78,6 @@ impl Page {
             Page::Maps => "世界",
             Page::Server => "服务器",
             Page::Mods => "模组",
-            Page::Advanced => "高级",
             Page::Settings => "设置",
         }
     }
@@ -131,6 +129,10 @@ struct App {
     // 页面入场动画（0 → 1），now 为最近一次时钟，驱动插值
     page_anim: Animation<bool>,
     now: Instant,
+    show_launch_account: bool,
+    show_launch_maintenance: bool,
+    show_launch_advanced: bool,
+    show_manage_favorites: bool,
     // Microsoft 登录（浏览器授权 + 粘贴回调 URL）
     ms_code_input: String,
     ms_logging_in: bool,
@@ -165,6 +167,7 @@ struct App {
     save_name_input: String,
     pending_save_delete: Option<String>,
     pending_world_enter: Option<String>,
+    map_menu_open: Option<String>,
     // 快速加入服务器
     server_address: String,
     server_profile_name: String,
@@ -248,6 +251,10 @@ impl App {
             dark_mode: config.ui_mode != "light",
             page_anim,
             now,
+            show_launch_account: false,
+            show_launch_maintenance: false,
+            show_launch_advanced: false,
+            show_manage_favorites: false,
             config,
             versions: Vec::new(),
             filtered: Vec::new(),
@@ -294,6 +301,7 @@ impl App {
             save_name_input: String::new(),
             pending_save_delete: None,
             pending_world_enter: None,
+            map_menu_open: None,
             server_address,
             server_profile_name: String::new(),
             server_ping_status: HashMap::new(),
@@ -387,6 +395,11 @@ impl App {
 #[derive(Debug, Clone)]
 enum Message {
     Navigate(Page),
+    ToggleLaunchAccount,
+    ToggleLaunchMaintenance,
+    ToggleLaunchAdvanced,
+    ToggleManageFavorites,
+    ToggleMapMenu(String),
     /// 动画时钟滴答
     Tick(Instant),
     /// 亮/暗主题切换
@@ -569,6 +582,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.pending_save_delete = None;
             app.pending_world_enter = None;
             app.pending_map_restore = None;
+            app.map_menu_open = None;
             // 重播页面入场动画
             app.now = Instant::now();
             app.page_anim = Animation::new(false)
@@ -584,6 +598,30 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             } else {
                 Task::none()
             }
+        }
+        Message::ToggleLaunchAccount => {
+            app.show_launch_account = !app.show_launch_account;
+            Task::none()
+        }
+        Message::ToggleLaunchMaintenance => {
+            app.show_launch_maintenance = !app.show_launch_maintenance;
+            Task::none()
+        }
+        Message::ToggleLaunchAdvanced => {
+            app.show_launch_advanced = !app.show_launch_advanced;
+            Task::none()
+        }
+        Message::ToggleManageFavorites => {
+            app.show_manage_favorites = !app.show_manage_favorites;
+            Task::none()
+        }
+        Message::ToggleMapMenu(id) => {
+            app.map_menu_open = if app.map_menu_open.as_deref() == Some(id.as_str()) {
+                None
+            } else {
+                Some(id)
+            };
+            Task::none()
         }
         Message::Tick(t) => {
             app.now = t;
@@ -3046,6 +3084,133 @@ mod switch_perf {
     use std::hint::black_box;
     use std::time::Duration;
 
+    #[cfg(feature = "screenshot")]
+    fn render_screenshot_image(app: &App, output: &std::path::Path, width: u32, height: u32) {
+        use iced::advanced::{graphics::Viewport, mouse, renderer};
+        use iced_runtime::user_interface::{Cache, UserInterface};
+
+        let bounds = Size::new(width as f32, height as f32);
+        let mut renderer = iced::Renderer::new(iced::Font::default(), iced::Pixels(16.0));
+        let mut interface = UserInterface::build(view(app), bounds, Cache::new(), &mut renderer);
+        let theme = if app.dark_mode {
+            style::theme_dark()
+        } else {
+            style::theme_light()
+        };
+        interface.draw(
+            &mut renderer,
+            &theme,
+            &renderer::Style::default(),
+            mouse::Cursor::Unavailable,
+        );
+
+        let mut pixmap = tiny_skia::Pixmap::new(width, height).expect("create screenshot pixmap");
+        let mut mask = tiny_skia::Mask::new(width, height).expect("create screenshot clip mask");
+        let viewport = Viewport::with_physical_size(Size::new(width, height), 1.0);
+        let damage = [iced::Rectangle::with_size(bounds)];
+        renderer.draw(
+            &mut pixmap.as_mut(),
+            &mut mask,
+            &viewport,
+            &damage,
+            style::scheme_of(app.dark_mode).bg_deep,
+        );
+        pixmap.save_png(output).expect("save screenshot PNG");
+    }
+
+    #[cfg(feature = "screenshot")]
+    fn screenshot_fixture() -> App {
+        let mut app = make_app(8);
+        app.releases = app.versions.clone();
+        app.refilter();
+        app.selected_profile = app.profiles.first().cloned();
+        app.status = "基线截图状态".into();
+        app.saves = vec![launcher::maps::MapSummary {
+            manifest: launcher::maps::MapManifest {
+                schema: 1,
+                id: "sample-world".into(),
+                name: "示例世界".into(),
+                source: launcher::maps::MapSource::Generated,
+                created_at: 0,
+                updated_at: 0,
+                last_played: 0,
+                generator: None,
+                game: None,
+                migrated_from: None,
+            },
+            world: launcher::saves::WorldSummary {
+                id: "sample-world".into(),
+                name: "示例世界".into(),
+                game_mode: "survival".into(),
+                difficulty: "normal".into(),
+                hardcore: false,
+                cheats: false,
+                last_played: 0,
+                version_name: "1.21.4".into(),
+                data_version: Some(4189),
+                size_bytes: 1_500_000,
+                icon: None,
+                dir: std::path::PathBuf::from("/tmp/sample-world"),
+            },
+        }];
+        app.config.saved_servers = vec![launcher::config::SavedServer {
+            name: "本地测试服".into(),
+            address: "127.0.0.1:25565".into(),
+        }];
+        app.server_ping_status
+            .insert("127.0.0.1:25565".into(), "在线 · 1/20".into());
+        app
+    }
+
+    #[cfg(feature = "screenshot")]
+    #[test]
+    #[ignore = "手动生成 GUI 离屏验收 PNG"]
+    fn render_screenshot_matrix() {
+        let output_dir = std::path::PathBuf::from("target/ui-screenshots");
+        std::fs::create_dir_all(&output_dir).expect("create screenshot output directory");
+        let sizes = [(900, 560), (1040, 700)];
+        let pages = [
+            (Page::Launch, "launch"),
+            (Page::Friends, "friends"),
+            (Page::Maps, "maps"),
+            (Page::Server, "server"),
+            (Page::Mods, "mods"),
+            (Page::Home, "home"),
+            (Page::Settings, "settings"),
+        ];
+
+        for (page, name) in pages {
+            for (width, height) in sizes {
+                let mut app = screenshot_fixture();
+                app.page = page;
+                app.now += Duration::from_secs(1);
+                let now = app.now;
+                let _ = update(&mut app, Message::Tick(now));
+                let output = output_dir.join(format!("{name}-{width}x{height}.png"));
+                render_screenshot_image(&app, &output, width, height);
+            }
+        }
+
+        for (width, height) in sizes {
+            let mut app = screenshot_fixture();
+            app.page = Page::Launch;
+            app.config.enhanced_experience = true;
+            app.selected_version = None;
+            app.show_launch_account = true;
+            app.show_launch_maintenance = true;
+            app.show_launch_advanced = true;
+            app.show_manage_favorites = true;
+            let output = output_dir.join(format!("launch-expanded-{width}x{height}.png"));
+            render_screenshot_image(&app, &output, width, height);
+
+            let mut app = screenshot_fixture();
+            app.page = Page::Maps;
+            app.map_menu_open = Some("sample-world".into());
+            let output = output_dir.join(format!("maps-more-{width}x{height}.png"));
+            render_screenshot_image(&app, &output, width, height);
+        }
+    }
+
     #[test]
     fn enhanced_launch_without_target_opens_world_library() {
         let mut app = make_app(1);
@@ -3244,6 +3409,54 @@ mod switch_perf {
         assert!(!views::page_requires_outer_scroll(Page::Maps));
     }
 
+    #[test]
+    fn all_seven_navigation_pages_build() {
+        let pages = [
+            Page::Home,
+            Page::Launch,
+            Page::Friends,
+            Page::Maps,
+            Page::Server,
+            Page::Mods,
+            Page::Settings,
+        ];
+        assert_eq!(
+            pages.map(Page::label),
+            ["首页", "启动", "好友", "世界", "服务器", "模组", "设置"]
+        );
+        let mut app = make_app(1);
+        for page in pages {
+            app.page = page;
+            let _ = view(&app);
+        }
+    }
+
+    #[test]
+    fn launch_sections_and_world_menu_toggle_independently() {
+        let mut app = make_app(1);
+        assert!(!app.show_launch_account);
+        assert!(!app.show_launch_maintenance);
+        assert!(!app.show_launch_advanced);
+        assert!(!app.show_manage_favorites);
+
+        let _ = update(&mut app, Message::ToggleLaunchAccount);
+        let _ = update(&mut app, Message::ToggleLaunchMaintenance);
+        let _ = update(&mut app, Message::ToggleLaunchAdvanced);
+        let _ = update(&mut app, Message::ToggleManageFavorites);
+        assert!(app.show_launch_account);
+        assert!(app.show_launch_maintenance);
+        assert!(app.show_launch_advanced);
+        assert!(app.show_manage_favorites);
+        let _ = view(&app);
+
+        let _ = update(&mut app, Message::ToggleMapMenu("first".into()));
+        assert_eq!(app.map_menu_open.as_deref(), Some("first"));
+        let _ = update(&mut app, Message::ToggleMapMenu("second".into()));
+        assert_eq!(app.map_menu_open.as_deref(), Some("second"));
+        let _ = update(&mut app, Message::ToggleMapMenu("second".into()));
+        assert_eq!(app.map_menu_open, None);
+    }
+
     fn make_app(n_versions: usize) -> App {
         let versions: Vec<launcher::download::VersionInfo> = (0..n_versions)
             .map(|i| launcher::download::VersionInfo {
@@ -3280,6 +3493,10 @@ mod switch_perf {
             dark_mode: true,
             page_anim: Animation::new(true),
             now: Instant::now(),
+            show_launch_account: false,
+            show_launch_maintenance: false,
+            show_launch_advanced: false,
+            show_manage_favorites: false,
             config: AppConfig::default(),
             versions,
             filtered: Vec::new(),
@@ -3326,6 +3543,7 @@ mod switch_perf {
             save_name_input: String::new(),
             pending_save_delete: None,
             pending_world_enter: None,
+            map_menu_open: None,
             server_address: String::new(),
             server_profile_name: String::new(),
             server_ping_status: HashMap::new(),

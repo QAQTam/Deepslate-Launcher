@@ -20,7 +20,7 @@
 - **增强客户端设置**：启动器选择语言、GC 方案与最大内存；新建单人世界时可设难度和常用游戏规则
 - **增强服务器收藏**：保存命名地址，查询 MOTD、版本、在线人数和延迟后快速连接
 - **本地服务端**：下载 `server.jar`、写 EULA/`server.properties`、启动/停止、日志查看、就绪后自动加入
-- **高级启动开关**：禁用多人/聊天、全屏、窗口尺寸、图形后端（26.3 参数）
+- **高级启动开关**：在启动页「高级启动」折叠区配置禁用多人/聊天、全屏、窗口尺寸与图形后端（26.3 参数）
 - **模组管理**：解析 `fabric.mod.json`，启用/禁用（`.jar.disabled`）、删除到回收站
 - **标题界面启动器名称**（vanilla 下把 `version.json` 覆盖到 classpath 最前；Fabric 受 Knot 限制暂不生效）
 
@@ -50,9 +50,9 @@ cargo build --release --workspace
 
 ## 开发文档
 
-- [当前交接](docs/current/HANDOFF.md)：本轮 EULA / UI / 帧率改动的状态与验证
+- [增强体验交接](docs/current/HANDOFF-enhanced-experience.md)：Bridge、好友同步与增强模式的现状和限制
 - [Bridge 分发设计](docs/current/DESIGN-bridge-distribution.md)：源码/JAR 入库、内嵌发布与首次增强安装流程
-- [下一步 UI 重构 spec](docs/current/SPEC-ui-restructure.md)：启动页重组、高级页合并、560px 滚动
+- [UI 体验优化 spec](docs/current/SPEC-ui-optimization.md)：7 项导航、启动页折叠区、世界卡菜单与离屏截图验收
 
 ## Fabric 安装
 

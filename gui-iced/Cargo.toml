@@ -9,11 +9,29 @@ license = "MIT"
 name = "deepslate-iced"
 path = "src/main.rs"
 
+[features]
+default = ["desktop"]
+desktop = [
+    "iced/wgpu",
+    "iced/tiny-skia",
+    "iced/crisp",
+    "iced/web-colors",
+    "iced/thread-pool",
+    "iced/linux-theme-detection",
+    "iced/x11",
+    "iced/wayland",
+]
+screenshot = ["iced/tiny-skia", "iced/x11", "iced/advanced"]
+
 [dependencies]
 deepslate-core = { path = "../core" }
 # wgpu 渲染失败时自动回退 tiny-skia；tokio feature 让 iced 的 async 跑在 tokio 上
-iced = { version = "0.14", features = ["tokio"] }
+iced = { version = "0.14", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["sync", "rt-multi-thread"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 open = "5"
 rfd = "0.17"
+
+[dev-dependencies]
+iced_runtime = "0.14"
+tiny-skia = "0.11"

@@ -1,5 +1,6 @@
 # Rust
 /target/
+/gui-iced/target/
 
 # Logs
 *.log

@@ -1,7 +1,7 @@
 # Spec — 启动页重组与高级页合并
 
 **日期**：2026-10-27\
-**状态**：已被取代。其滚动/验收要求已落地（Launch/Friends/Settings 外层滚动，见 `gui-iced/src/views.rs:6`）；信息架构部分未实施。后续工作以 [SPEC-ui-optimization.md](./SPEC-ui-optimization.md)（2026-10-28，按含好友页的 8 项导航现状重写）为准。\
+**状态**：已被取代；导航与信息架构已按 [SPEC-ui-optimization.md](./SPEC-ui-optimization.md) 首轮实施。本文保留作历史方案。\
 **范围**：`gui-iced` 前端布局/导航，不改 `core` 业务逻辑\
 **前置**：[HANDOFF.md](./HANDOFF.md)
 

@@ -28,7 +28,7 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
                 text("◆").size(18).color(s.accent),
                 column![
                     text("Deepslate").size(17).color(s.text_primary),
-                    text("深板岩启动器").size(9).color(s.text_faint),
+                    text("深板岩启动器").size(12).color(s.text_faint),
                 ],
             ]
             .spacing(8)
@@ -40,12 +40,11 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
             nav(Page::Maps),
             nav(Page::Server),
             nav(Page::Mods),
-            nav(Page::Advanced),
             nav(Page::Settings),
             Space::new().height(Length::Fill),
             row![
                 text("●").size(10).color(status_dot),
-                text(game_state_label(app)).size(11).color(s.text_muted),
+                text(game_state_label(app)).size(12).color(s.text_muted),
             ]
             .spacing(6),
         ]
@@ -166,19 +165,19 @@ fn eula_modal(app: &App) -> Element<'_, Message> {
         row![
             text("Minecraft EULA").size(20).color(s.text_primary),
             Space::new().width(Length::Fill),
-            text("首次启动前必须同意").size(10).color(s.text_faint),
+            text("首次启动前必须同意").size(12).color(s.text_faint),
         ]
         .align_y(iced::Alignment::Center),
         text("正文直接来自 https://www.minecraft.net/en-us/eula，不手写、不截断。")
-            .size(11)
+            .size(12)
             .color(s.text_muted),
     ]
     .spacing(8);
     if let Some(source) = &app.eula_source {
-        card = card.push(text(source.as_str()).size(10).color(s.text_faint));
+        card = card.push(text(source.as_str()).size(12).color(s.text_faint));
     }
     if let Some(warning) = &app.eula_warning {
-        card = card.push(text(warning.as_str()).size(10).color(s.accent));
+        card = card.push(text(warning.as_str()).size(12).color(s.accent));
     }
     card = card.push(rule::horizontal(1.0).style(style::rule_style));
     card = card.push(body);
@@ -187,11 +186,11 @@ fn eula_modal(app: &App) -> Element<'_, Message> {
         row![
             agree,
             Space::new().width(Length::Fill),
-            button(text("取消").size(11))
+            button(text("取消").size(12))
                 .padding(4.0)
                 .style(style::secondary)
                 .on_press(Message::EulaCancel),
-            button(text("重新获取").size(11))
+            button(text("重新获取").size(12))
                 .padding(4.0)
                 .style(style::secondary)
                 .on_press(Message::EulaRetry),
@@ -200,7 +199,7 @@ fn eula_modal(app: &App) -> Element<'_, Message> {
         .spacing(8)
         .align_y(iced::Alignment::Center),
     );
-    card = card.push(text(hint).size(10).color(s.text_faint));
+    card = card.push(text(hint).size(12).color(s.text_faint));
 
     container(
         container(card)
@@ -225,6 +224,33 @@ fn section_card<'a>(
 ) -> Element<'a, Message> {
     container(column![text(title.to_string()).size(15).color(s.text_primary), body,].spacing(10))
         .padding(16)
+        .style(style::card)
+        .into()
+}
+
+fn collapsible_section<'a>(
+    s: &'static style::Scheme,
+    title: &str,
+    expanded: bool,
+    toggle: Message,
+    body: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let header = row![
+        text(title.to_string()).size(15).color(s.text_primary),
+        Space::new().width(Length::Fill),
+        button(text(if expanded { "收起" } else { "展开" }).size(12))
+            .padding([5, 9])
+            .style(style::secondary)
+            .on_press(toggle),
+    ]
+    .align_y(iced::Alignment::Center);
+    let mut content = column![header].spacing(10);
+    if expanded {
+        content = content.push(body);
+    }
+    container(content)
+        .padding(16)
+        .width(Length::Fill)
         .style(style::card)
         .into()
 }
@@ -262,7 +288,6 @@ fn page_view(app: &App) -> Element<'_, Message> {
         Page::Maps => maps_page(app, t),
         Page::Server => server_page(app, t),
         Page::Mods => mods_page(app, t),
-        Page::Advanced => advanced_page(app, t),
         Page::Settings => settings_page(app, t),
     };
     // 整页轻微上浮入场
@@ -294,7 +319,7 @@ fn ms_login_section<'a>(app: &'a App, s: &'static style::Scheme) -> Element<'a, 
                 .style(style::secondary)
                 .on_press(Message::MsAuthPressed),
             text("浏览器完成授权后，把跳转到的 URL 粘贴到下面")
-                .size(11)
+                .size(12)
                 .color(s.text_faint),
         ]
         .spacing(8),
@@ -309,6 +334,241 @@ fn ms_login_section<'a>(app: &'a App, s: &'static style::Scheme) -> Element<'a, 
     ]
     .spacing(8)
     .into()
+}
+
+fn launch_hero<'a>(
+    s: &'static style::Scheme,
+    version_selection: Element<'a, Message>,
+    java_picker: Element<'a, Message>,
+    profile_picker: Element<'a, Message>,
+    profile_summary: String,
+    download_control: Element<'a, Message>,
+    launch_btn: Element<'a, Message>,
+    progress_section: Element<'a, Message>,
+    status_text: String,
+) -> Element<'a, Message> {
+    section_card(
+        s,
+        "开始游戏",
+        column![
+            row![
+                container(version_selection).width(Length::Fill),
+                container(java_picker).width(Length::Fill),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center),
+            row![
+                container(profile_picker).width(Length::Fill),
+                text(profile_summary).size(12).color(s.text_muted),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center),
+            row![download_control, launch_btn].spacing(10),
+            progress_section,
+            text(status_text).size(12).color(s.text_muted),
+        ]
+        .spacing(9)
+        .into(),
+    )
+}
+
+fn launch_account_section<'a>(app: &'a App, s: &'static style::Scheme) -> Element<'a, Message> {
+    let new_profile_input = text_input("新建离线档案...", &app.new_profile_name)
+        .on_input(Message::NewProfileNameChanged)
+        .on_submit(Message::CreateProfile)
+        .style(style::text_field);
+    collapsible_section(
+        s,
+        "账户",
+        app.show_launch_account,
+        Message::ToggleLaunchAccount,
+        column![new_profile_input, ms_login_section(app, s)]
+            .spacing(10)
+            .into(),
+    )
+}
+
+fn launch_maintenance_section<'a>(
+    app: &'a App,
+    s: &'static style::Scheme,
+    fabric_card: Element<'a, Message>,
+    java_rescan: Element<'a, Message>,
+) -> Element<'a, Message> {
+    collapsible_section(
+        s,
+        "安装与维护",
+        app.show_launch_maintenance,
+        Message::ToggleLaunchMaintenance,
+        column![fabric_card, java_rescan].spacing(10).into(),
+    )
+}
+
+fn launch_advanced_section<'a>(app: &'a App, s: &'static style::Scheme) -> Element<'a, Message> {
+    collapsible_section(
+        s,
+        "高级启动",
+        app.show_launch_advanced,
+        Message::ToggleLaunchAdvanced,
+        launch_advanced_content(app, s),
+    )
+}
+
+fn quick_join_card<'a>(app: &'a App, s: &'static style::Scheme) -> Element<'a, Message> {
+    let server_btn = {
+        let b = button(text("快速加入").size(13)).padding(7.0);
+        if app.game_running
+            || app.launching
+            || app.fabric_installing
+            || app.server_address.trim().is_empty()
+        {
+            b
+        } else {
+            b.style(style::primary).on_press(Message::QuickJoinServer)
+        }
+    };
+    let recent_servers: Element<Message> = if app.config.recent_servers.is_empty() {
+        text("暂无历史地址").size(12).color(s.text_faint).into()
+    } else {
+        row(app
+            .config
+            .recent_servers
+            .iter()
+            .take(4)
+            .map(|address| {
+                button(text(address.clone()).size(12))
+                    .padding(4.0)
+                    .style(style::secondary)
+                    .on_press(Message::ServerAddressChanged(address.clone()))
+                    .into()
+            })
+            .collect::<Vec<Element<Message>>>())
+        .spacing(5)
+        .into()
+    };
+    let saved_favorites: Element<Message> = if app.config.enhanced_experience {
+        if app.config.saved_servers.is_empty() {
+            text("还没有收藏的服务器")
+                .size(12)
+                .color(s.text_faint)
+                .into()
+        } else {
+            column(
+                app.config
+                    .saved_servers
+                    .iter()
+                    .take(8)
+                    .map(|server| {
+                        let status = app
+                            .server_ping_status
+                            .get(&server.address)
+                            .cloned()
+                            .unwrap_or_else(|| "未查询状态".into());
+                        row![
+                            button(text(format!("{} · {}", server.name, server.address)).size(12))
+                                .padding(5)
+                                .style(style::secondary)
+                                .on_press(Message::ServerAddressChanged(server.address.clone())),
+                            text(status).size(12).color(s.text_faint),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center)
+                        .into()
+                    })
+                    .collect::<Vec<Element<Message>>>(),
+            )
+            .spacing(5)
+            .into()
+        }
+    } else {
+        Space::new().height(0).into()
+    };
+    let manage_favorites_content: Element<Message> = if app.config.enhanced_experience {
+        let saved_rows = app
+            .config
+            .saved_servers
+            .iter()
+            .take(8)
+            .map(|server| {
+                let status = app
+                    .server_ping_status
+                    .get(&server.address)
+                    .cloned()
+                    .unwrap_or_else(|| "未查询状态".into());
+                row![
+                    text(format!("{} · {} · {}", server.name, server.address, status))
+                        .size(12)
+                        .color(s.text_muted),
+                    button(text("查询").size(12))
+                        .padding(5)
+                        .style(style::secondary)
+                        .on_press(Message::PingServer(server.address.clone())),
+                    button(text("移除").size(12))
+                        .padding(5)
+                        .style(style::danger)
+                        .on_press(Message::RemoveServerProfile(server.address.clone())),
+                ]
+                .spacing(5)
+                .align_y(iced::Alignment::Center)
+                .into()
+            })
+            .collect::<Vec<Element<Message>>>();
+        column![
+            row![
+                text_input("收藏名称（可留空）", &app.server_profile_name)
+                    .on_input(Message::ServerProfileNameChanged)
+                    .on_submit(Message::SaveServerProfile)
+                    .style(style::text_field),
+                button(text("收藏当前地址").size(12))
+                    .padding(6)
+                    .style(style::secondary)
+                    .on_press(Message::SaveServerProfile),
+            ]
+            .spacing(6),
+            column(saved_rows).spacing(5),
+        ]
+        .spacing(6)
+        .into()
+    } else {
+        text("收藏仅在增强体验中可用")
+            .size(12)
+            .color(s.text_faint)
+            .into()
+    };
+    let manage_favorites = collapsible_section(
+        s,
+        "管理收藏",
+        app.show_manage_favorites,
+        Message::ToggleManageFavorites,
+        manage_favorites_content,
+    );
+    section_card(
+        s,
+        "快速加入服务器",
+        column![
+            row![
+                text_input("host 或 host:port", &app.server_address)
+                    .on_input(Message::ServerAddressChanged)
+                    .on_submit(Message::QuickJoinServer)
+                    .style(style::text_field),
+                server_btn,
+            ]
+            .spacing(8),
+            row![text("最近:").size(12).color(s.text_muted), recent_servers]
+                .spacing(6)
+                .align_y(iced::Alignment::Center),
+            saved_favorites,
+            manage_favorites,
+            text(if app.config.enhanced_experience {
+                "使用增强实例连接；退出服务器后关闭客户端。"
+            } else {
+                "启动后直接连接（需档案与 Java）。"
+            })
+            .size(12)
+            .color(s.text_faint),
+        ]
+        .spacing(8)
+        .into(),
+    )
 }
 
 fn launch_page(app: &App, t: f32) -> Element<'_, Message> {
@@ -341,11 +601,6 @@ fn launch_page(app: &App, t: f32) -> Element<'_, Message> {
     )
     .placeholder("选择档案")
     .style(style::pick);
-
-    let new_profile_input = text_input("新建离线档案...", &app.new_profile_name)
-        .on_input(Message::NewProfileNameChanged)
-        .on_submit(Message::CreateProfile)
-        .style(style::text_field);
 
     let java_picker = pick_list(
         app.java_list.clone(),
@@ -419,35 +674,17 @@ fn launch_page(app: &App, t: f32) -> Element<'_, Message> {
             Space::new().height(Length::from(1)).into()
         };
 
-    let selected_summary = row![
-        text("档案:").size(12).color(s.text_muted),
-        text(
-            app.selected_profile
-                .as_ref()
-                .map(|p| p.name.as_str())
-                .unwrap_or("未选择")
-        )
-        .size(12)
-        .color(s.text_primary),
-        text("版本:").size(12).color(s.text_muted),
-        text(if app.config.enhanced_experience {
-            "26.3（增强体验）".to_string()
-        } else {
-            app.selected_version
-                .as_ref()
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "未选择".to_string())
-        })
-        .size(12)
-        .color(s.text_primary),
-    ]
-    .spacing(8);
-
-    let version_card = section_card(
-        s,
-        "版本",
-        column![tab_row, version_picker].spacing(10).into(),
-    );
+    let version_selection: Element<Message> = if app.config.enhanced_experience {
+        text("Minecraft 26.3 · 增强体验")
+            .size(13)
+            .color(s.text_primary)
+            .into()
+    } else {
+        column![tab_row, version_picker]
+            .spacing(6)
+            .width(Length::Fill)
+            .into()
+    };
 
     // Fabric 安装：选基准版本 + 加载器版本 → 下载 profile 库并写入 versions/
     let fabric_btn = {
@@ -474,12 +711,12 @@ fn launch_page(app: &App, t: f32) -> Element<'_, Message> {
                     "{}/{}（{}%）— {}",
                     p.current, p.total, p.percent, p.current_file
                 ))
-                .size(11)
+                .size(12)
                 .color(s.text_muted),
             ]
             .spacing(6)
             .into(),
-            None => text("准备安装...").size(11).color(s.text_muted).into(),
+            None => text("准备安装...").size(12).color(s.text_muted).into(),
         }
     } else {
         Space::new().height(Length::from(1)).into()
@@ -526,35 +763,16 @@ fn launch_page(app: &App, t: f32) -> Element<'_, Message> {
             .spacing(8)
             .align_y(iced::Alignment::Center),
             fabric_progress,
-            text(fabric_hint).size(11).color(s.text_faint),
+            text(fabric_hint).size(12).color(s.text_faint),
         ]
         .spacing(8)
         .into(),
     );
 
-    let profile_card = section_card(
-        s,
-        "档案",
-        column![
-            row![profile_picker, new_profile_input].spacing(8),
-            ms_login_section(app, s),
-        ]
-        .spacing(10)
-        .into(),
-    );
-    let java_card = section_card(
-        s,
-        "Java 运行时",
-        row![
-            java_picker,
-            button(text("重新扫描").size(13))
-                .padding(6.0)
-                .style(style::secondary)
-                .on_press(Message::RescanJava),
-        ]
-        .spacing(8)
-        .into(),
-    );
+    let java_rescan = button(text("重新扫描 Java").size(12))
+        .padding(6.0)
+        .style(style::secondary)
+        .on_press(Message::RescanJava);
     let download_control: Element<Message> = if app.config.enhanced_experience {
         Space::new().width(0).into()
     } else {
@@ -582,173 +800,37 @@ fn launch_page(app: &App, t: f32) -> Element<'_, Message> {
     } else {
         app.status.clone()
     };
-    let actions_card = section_card(
-        s,
-        "启动",
-        column![
-            row![download_control, launch_btn].spacing(12),
-            progress_section,
-            selected_summary,
-            text(status_text).size(12).color(s.text_muted),
-        ]
-        .spacing(12)
-        .into(),
-    );
+    let server_card = quick_join_card(app, s);
 
-    let server_btn = {
-        let b = button(text("快速加入").size(13)).padding(7.0);
-        if app.game_running
-            || app.launching
-            || app.fabric_installing
-            || app.server_address.trim().is_empty()
-        {
-            b
+    let profile_summary = format!(
+        "{} · {}",
+        app.selected_profile
+            .as_ref()
+            .map(|profile| profile.name.as_str())
+            .unwrap_or("未选择档案"),
+        if app.config.enhanced_experience {
+            "Minecraft 26.3"
         } else {
-            b.style(style::primary).on_press(Message::QuickJoinServer)
+            app.selected_version
+                .as_ref()
+                .map(|version| version.id.as_str())
+                .unwrap_or("未选择版本")
         }
-    };
-    let recent_servers: Element<Message> = if app.config.recent_servers.is_empty() {
-        text("暂无历史地址").size(11).color(s.text_faint).into()
-    } else {
-        row(app
-            .config
-            .recent_servers
-            .iter()
-            .take(4)
-            .map(|address| {
-                button(text(address.clone()).size(11))
-                    .padding(4.0)
-                    .style(style::secondary)
-                    .on_press(Message::ServerAddressChanged(address.clone()))
-                    .into()
-            })
-            .collect::<Vec<Element<Message>>>())
-        .spacing(5)
-        .into()
-    };
-    let saved_server_profiles: Element<Message> = if app.config.enhanced_experience {
-        let saved_rows = app
-            .config
-            .saved_servers
-            .iter()
-            .take(8)
-            .map(|server| {
-                let status = app
-                    .server_ping_status
-                    .get(&server.address)
-                    .cloned()
-                    .unwrap_or_else(|| "未查询状态".into());
-                column![
-                    row![
-                        button(text(format!("{} · {}", server.name, server.address)).size(11))
-                            .padding(5)
-                            .style(style::secondary)
-                            .on_press(Message::ServerAddressChanged(server.address.clone())),
-                        button(text("查询").size(10))
-                            .padding(5)
-                            .style(style::secondary)
-                            .on_press(Message::PingServer(server.address.clone())),
-                        button(text("移除").size(10))
-                            .padding(5)
-                            .style(style::danger)
-                            .on_press(Message::RemoveServerProfile(server.address.clone())),
-                    ]
-                    .spacing(5)
-                    .align_y(iced::Alignment::Center),
-                    text(status).size(10).color(s.text_faint),
-                ]
-                .spacing(2)
-                .into()
-            })
-            .collect::<Vec<Element<Message>>>();
-        let saved_list: Element<Message> = if saved_rows.is_empty() {
-            text("还没有收藏的服务器")
-                .size(10)
-                .color(s.text_faint)
-                .into()
-        } else {
-            column(saved_rows).spacing(5).into()
-        };
-        column![
-            row![
-                text_input("收藏名称（可留空）", &app.server_profile_name)
-                    .on_input(Message::ServerProfileNameChanged)
-                    .on_submit(Message::SaveServerProfile)
-                    .style(style::text_field),
-                button(text("收藏地址").size(11))
-                    .padding(6)
-                    .style(style::secondary)
-                    .on_press(Message::SaveServerProfile),
-            ]
-            .spacing(6),
-            saved_list,
-        ]
-        .spacing(6)
-        .into()
-    } else {
-        Space::new().height(0).into()
-    };
-    let server_card = section_card(
-        s,
-        "快速加入服务器",
-        column![
-            row![
-                text_input("host 或 host:port", &app.server_address)
-                    .on_input(Message::ServerAddressChanged)
-                    .on_submit(Message::QuickJoinServer)
-                    .style(style::text_field),
-                server_btn,
-            ]
-            .spacing(8),
-            row![text("最近:").size(11).color(s.text_muted), recent_servers]
-                .spacing(6)
-                .align_y(iced::Alignment::Center),
-            saved_server_profiles,
-            text(if app.config.enhanced_experience {
-                "使用增强实例连接；退出服务器后关闭客户端。"
-            } else {
-                "启动后直接连接（需档案与 Java）。"
-            })
-            .size(11)
-            .color(s.text_faint),
-        ]
-        .spacing(8)
-        .into(),
     );
-
-    // 双栏网格：左（版本/Fabric/档案）右（Java/启动）
-    let left = if app.config.enhanced_experience {
-        column![
-            enter(
-                t,
-                0.00,
-                section_card(
-                    s,
-                    "增强体验",
-                    text("最低要求 Minecraft 26.3 · 当前已接入 26.3 · Fabric 与 Bridge 自动维护")
-                        .size(12)
-                        .color(s.text_muted)
-                        .into()
-                )
-            ),
-            enter(t, 0.16, profile_card)
-        ]
-    } else {
-        column![
-            enter(t, 0.00, version_card),
-            enter(t, 0.08, fabric_card),
-            enter(t, 0.16, profile_card)
-        ]
-    }
-    .spacing(16)
-    .width(Length::Fill);
-    let right = column![
-        enter(t, 0.24, java_card),
-        enter(t, 0.36, actions_card),
-        enter(t, 0.44, server_card),
-    ]
-    .spacing(16)
-    .width(Length::Fill);
+    let hero = launch_hero(
+        s,
+        version_selection,
+        java_picker.into(),
+        profile_picker.into(),
+        profile_summary,
+        download_control,
+        launch_btn.into(),
+        progress_section,
+        status_text,
+    );
+    let account = launch_account_section(app, s);
+    let maintenance = launch_maintenance_section(app, s, fabric_card, java_rescan.into());
+    let advanced = launch_advanced_section(app, s);
 
     column![
         text("启动").size(28).color(s.text_primary),
@@ -756,10 +838,14 @@ fn launch_page(app: &App, t: f32) -> Element<'_, Message> {
             "游戏目录: {}",
             launcher::config::resolve_game_dir(&app.config).display()
         ))
-        .size(11)
+        .size(12)
         .color(s.text_faint),
         rule::horizontal(1.0).style(style::rule_style),
-        row![left, right].spacing(16),
+        enter(t, 0.0, hero),
+        enter(t, 0.12, server_card),
+        account,
+        maintenance,
+        advanced,
     ]
     .spacing(16)
     .into()
@@ -877,7 +963,7 @@ fn home_page(app: &App, t: f32) -> Element<'_, Message> {
                         launcher::saves::summary_line(map),
                         map.last_played_text()
                     ))
-                    .size(11)
+                    .size(12)
                     .color(s.text_muted),
                 ]
                 .spacing(5),
@@ -927,10 +1013,12 @@ fn home_page(app: &App, t: f32) -> Element<'_, Message> {
         enter(t, 0.0, status_card),
         enter(t, 0.06, continue_card),
         enter(t, 0.12, row![launch_btn, download_btn,].spacing(12).into()),
-        text("提示：版本 / 档案 / Java 在「启动」页选择；世界与地图库在「世界」页管理。")
-            .size(12)
-            .color(s.text_faint),
-        text(app.status.as_str()).size(12).color(s.text_muted),
+        text(format!(
+            "提示：版本 / 档案 / Java 在「启动」页选择；世界在「世界」页管理。 当前状态：{}",
+            app.status
+        ))
+        .size(12)
+        .color(s.text_muted),
     ]
     .spacing(16)
     .width(Length::Fill)
@@ -951,7 +1039,7 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
             maps_dir.display(),
             app.saves.len()
         ))
-        .size(11)
+        .size(12)
         .color(s.text_faint),
         rule::horizontal(1.0).style(style::rule_style),
     ]
@@ -983,7 +1071,7 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
         } else {
             "「进入」使用 --quickPlaySingleplayer（Minecraft 1.20+）"
         })
-        .size(11)
+        .size(12)
         .color(s.text_faint),
     ]
     .spacing(10)
@@ -1014,7 +1102,7 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
         column![
             text("地图库还是空的").size(13).color(s.text_muted),
             text("可以在下面生成一个新世界，或导入 zip / 世界文件夹。")
-                .size(11)
+                .size(12)
                 .color(s.text_faint),
         ]
         .spacing(6)
@@ -1048,26 +1136,51 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
                             .on_press(Message::SaveEnter(world.id.clone()))
                     }
                 };
-                let rename_btn = button(text("重命名").size(12))
-                    .padding(5.0)
-                    .style(style::secondary)
-                    .on_press(Message::SaveRenameStart(world.id.clone()));
-                let copy_btn = button(text("复制").size(12))
-                    .padding(5.0)
-                    .style(style::secondary)
-                    .on_press(Message::SaveDuplicate(world.id.clone()));
-                let export_btn = button(text("导出").size(12))
-                    .padding(5.0)
-                    .style(style::secondary)
-                    .on_press(Message::ExportMap(world.id.clone()));
-                let export_as_btn = button(text("导出为...").size(12))
-                    .padding(5.0)
-                    .style(style::secondary)
-                    .on_press(Message::ExportMapAs(world.id.clone()));
-                let backup_btn = button(text("备份").size(12))
-                    .padding(5.0)
-                    .style(style::secondary)
-                    .on_press(Message::MapBackup(world.id.clone()));
+                let rename_btn = {
+                    let b = button(text("重命名").size(12)).padding(5.0);
+                    if busy {
+                        b
+                    } else {
+                        b.style(style::secondary)
+                            .on_press(Message::SaveRenameStart(world.id.clone()))
+                    }
+                };
+                let copy_btn = {
+                    let b = button(text("复制").size(12)).padding(5.0);
+                    if busy {
+                        b
+                    } else {
+                        b.style(style::secondary)
+                            .on_press(Message::SaveDuplicate(world.id.clone()))
+                    }
+                };
+                let export_btn = {
+                    let b = button(text("导出").size(12)).padding(5.0);
+                    if busy {
+                        b
+                    } else {
+                        b.style(style::secondary)
+                            .on_press(Message::ExportMap(world.id.clone()))
+                    }
+                };
+                let export_as_btn = {
+                    let b = button(text("导出为...").size(12)).padding(5.0);
+                    if busy {
+                        b
+                    } else {
+                        b.style(style::secondary)
+                            .on_press(Message::ExportMapAs(world.id.clone()))
+                    }
+                };
+                let backup_btn = {
+                    let b = button(text("备份").size(12)).padding(5.0);
+                    if busy {
+                        b
+                    } else {
+                        b.style(style::secondary)
+                            .on_press(Message::MapBackup(world.id.clone()))
+                    }
+                };
                 let restore_btn = {
                     let b = button(
                         text(if restoring {
@@ -1083,7 +1196,11 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
                     } else {
                         b.style(style::secondary)
                     };
-                    b.on_press(Message::MapRestore(world.id.clone()))
+                    if busy {
+                        b
+                    } else {
+                        b.on_press(Message::MapRestore(world.id.clone()))
+                    }
                 };
                 let delete_btn = {
                     let b = button(
@@ -1100,22 +1217,37 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
                     } else {
                         b.style(style::secondary)
                     };
-                    b.on_press(Message::SaveDeletePressed(world.id.clone()))
+                    if busy {
+                        b
+                    } else {
+                        b.on_press(Message::SaveDeletePressed(world.id.clone()))
+                    }
+                };
+                let more_btn = {
+                    let menu_open = app.map_menu_open.as_deref() == Some(world.id.as_str());
+                    let b =
+                        button(text(if menu_open { "收起" } else { "更多" }).size(12)).padding(5.0);
+                    if busy {
+                        b
+                    } else {
+                        b.style(style::secondary)
+                            .on_press(Message::ToggleMapMenu(world.id.clone()))
+                    }
                 };
 
                 let mut badges: Vec<Element<Message>> = Vec::new();
                 if world.hardcore {
-                    badges.push(text("极限").size(10).color(s.accent).into());
+                    badges.push(text("极限").size(12).color(s.accent).into());
                 }
                 if world.cheats {
-                    badges.push(text("作弊").size(10).color(s.text_faint).into());
+                    badges.push(text("作弊").size(12).color(s.text_faint).into());
                 }
                 if world.icon.is_some() {
-                    badges.push(text("有图标").size(10).color(s.text_faint).into());
+                    badges.push(text("有图标").size(12).color(s.text_faint).into());
                 }
                 badges.push(
                     text(world.source_label())
-                        .size(10)
+                        .size(12)
                         .color(s.text_faint)
                         .into(),
                 );
@@ -1126,29 +1258,35 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
                         row(badges).spacing(6),
                         Space::new().width(Length::Fill),
                         enter_btn,
+                        more_btn,
                     ]
                     .spacing(8)
                     .align_y(iced::Alignment::Center),
                     text(launcher::saves::summary_line(world))
-                        .size(11)
+                        .size(12)
                         .color(s.text_muted),
                     text(format!("{} · 文件夹 {}", world.size_text(), world.id))
-                        .size(10)
+                        .size(12)
                         .color(s.text_faint),
-                    row![
-                        rename_btn,
-                        copy_btn,
-                        export_btn,
-                        export_as_btn,
-                        backup_btn,
-                        restore_btn,
-                        delete_btn,
-                    ]
-                    .spacing(6),
                 ]
                 .spacing(6);
 
-                if renaming {
+                if app.map_menu_open.as_deref() == Some(world.id.as_str()) {
+                    body = body.push(
+                        row![
+                            rename_btn,
+                            copy_btn,
+                            export_btn,
+                            export_as_btn,
+                            backup_btn,
+                            restore_btn,
+                            delete_btn,
+                        ]
+                        .spacing(6),
+                    );
+                }
+
+                if renaming && !busy {
                     body = body.push(
                         row![
                             text_input("新的世界名称", &app.save_name_input)
@@ -1170,7 +1308,7 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
                 if deleting {
                     body = body.push(
                         text("再次点击「确认删除？」将移动到 maps/.deepslate-trash/（可恢复）")
-                            .size(11)
+                            .size(12)
                             .color(s.danger),
                     );
                 }
@@ -1324,7 +1462,7 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
                 } else {
                     "生成前会要求同意 Minecraft EULA"
                 })
-                .size(11)
+                .size(12)
                 .color(s.text_faint),
                 Space::new().width(Length::Fill),
                 create_btn,
@@ -1336,7 +1474,7 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
             } else {
                 "使用后台原版服务端生成世界；首次会下载约 60MB server.jar，需要 Java 与 EULA 同意。"
             })
-            .size(10)
+            .size(12)
             .color(s.text_faint),
         ]
         .spacing(8)
@@ -1364,7 +1502,7 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
                     column![
                         text(world.name.clone()).size(13).color(s.text_primary),
                         text(format!("{} · {}", world.id, status))
-                            .size(11)
+                            .size(12)
                             .color(s.text_muted)
                     ]
                     .spacing(4),
@@ -1422,15 +1560,15 @@ fn mods_page(app: &App, t: f32) -> Element<'_, Message> {
             "版本: {version_label}  ·  {enabled_count}/{} 启用  ·  {dir}",
             app.mods.len()
         ))
-        .size(11)
+        .size(12)
         .color(s.text_faint),
         if !has_loader {
             text("当前版本没有 Fabric/Quilt 等加载器，游戏不会读取 mods/；请选择已安装的 Fabric 版本。")
-                .size(11)
+                .size(12)
                 .color(s.danger)
         } else {
             text("启用/禁用通过重命名 .jar 与 .jar.disabled 实现，重启游戏后生效。")
-                .size(11)
+                .size(12)
                 .color(s.text_faint)
         },
         rule::horizontal(1.0).style(style::rule_style),
@@ -1452,7 +1590,7 @@ fn mods_page(app: &App, t: f32) -> Element<'_, Message> {
             .on_press(Message::EmptyModTrash),
         Space::new().width(Length::Fill),
         text("支持 fabric.mod.json 的 id/name/version/authors/environment")
-            .size(10)
+            .size(12)
             .color(s.text_faint),
     ]
     .spacing(10)
@@ -1475,8 +1613,12 @@ fn mods_page(app: &App, t: f32) -> Element<'_, Message> {
             column![
                 text("mods/ 里还没有模组").size(13).color(s.text_muted),
                 text("把 Fabric 模组 jar 放进上面的目录，然后点「刷新」。")
-                    .size(11)
+                    .size(12)
                     .color(s.text_faint),
+                button(text("去启动页安装 Fabric").size(13))
+                    .padding(7.0)
+                    .style(style::secondary)
+                    .on_press(Message::Navigate(Page::Launch)),
                 button(text("打开 mods 目录").size(13))
                     .padding(7.0)
                     .style(style::primary)
@@ -1537,9 +1679,9 @@ fn mods_page(app: &App, t: f32) -> Element<'_, Message> {
                     }
 
                     let enabled_badge: Element<Message> = if mod_info.enabled {
-                        text("已启用").size(10).color(s.accent).into()
+                        text("已启用").size(12).color(s.accent).into()
                     } else {
-                        text("已禁用").size(10).color(s.text_faint).into()
+                        text("已禁用").size(12).color(s.text_faint).into()
                     };
                     let mut body = column![
                         row![
@@ -1549,7 +1691,7 @@ fn mods_page(app: &App, t: f32) -> Element<'_, Message> {
                             } else {
                                 format!("v{}", mod_info.version)
                             })
-                            .size(11)
+                            .size(12)
                             .color(s.text_faint),
                             enabled_badge,
                             Space::new().width(Length::Fill),
@@ -1558,23 +1700,23 @@ fn mods_page(app: &App, t: f32) -> Element<'_, Message> {
                         ]
                         .spacing(8)
                         .align_y(iced::Alignment::Center),
-                        text(details.join("  ·  ")).size(10).color(s.text_faint),
+                        text(details.join("  ·  ")).size(12).color(s.text_faint),
                     ]
                     .spacing(6);
                     if !mod_info.description.is_empty() {
                         body = body.push(
                             text(mod_info.description.clone())
-                                .size(11)
+                                .size(12)
                                 .color(s.text_muted),
                         );
                     }
                     if let Some(error) = &mod_info.metadata_error {
-                        body = body.push(text(error.clone()).size(10).color(s.danger));
+                        body = body.push(text(error.clone()).size(12).color(s.danger));
                     }
                     if deleting {
                         body = body.push(
                             text("再次点击「确认删除？」移动到 mods/.deepslate-trash/（可恢复）")
-                                .size(10)
+                                .size(12)
                                 .color(s.danger),
                         );
                     }
@@ -1650,22 +1792,22 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
                 text(format!("当前账号: {account}")).size(12).color(s.text_muted),
                 Space::new().width(Length::Fill),
                 text(format!("{} 位好友", app.friends.friends.len()))
-                    .size(11)
+                    .size(12)
                     .color(s.text_faint),
             ]
             .align_y(iced::Alignment::Center),
             text(service_state).size(13).color(s.text_primary),
-            text(sync_label).size(11).color(s.text_faint),
-            text(settings_label).size(11).color(s.text_faint),
+            text(sync_label).size(12).color(s.text_faint),
+            text(settings_label).size(12).color(s.text_faint),
             text(format!(
                 "申请：收到 {} · 已发送 {}",
                 app.friends.incoming_requests.len(),
                 app.friends.outgoing_requests.len()
             ))
-            .size(11)
+            .size(12)
             .color(s.text_faint),
             text("在游戏内 Minecraft 官方好友页面发送、接受或撤回好友申请；启动器展示最近一次同步的列表与请求。")
-                .size(11)
+                .size(12)
                 .color(s.text_muted),
         ]
         .spacing(8)
@@ -1705,12 +1847,12 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
                     column![
                         text(friend.name.clone()).size(13).color(s.text_primary),
                         text(format!("Minecraft 玩家 · {id_hint}"))
-                            .size(10)
+                            .size(12)
                             .color(s.text_faint),
                     ]
                     .spacing(3),
                     Space::new().width(Length::Fill),
-                    text(presence).size(10).color(s.text_muted),
+                    text(presence).size(12).color(s.text_muted),
                 ]
                 .spacing(9)
                 .align_y(iced::Alignment::Center),
@@ -1788,12 +1930,12 @@ fn friends_request_card<'a>(
                     column![
                         text(friend.name.clone()).size(13).color(s.text_primary),
                         text(format!("Minecraft 玩家 · {id_hint}"))
-                            .size(10)
+                            .size(12)
                             .color(s.text_faint),
                     ]
                     .spacing(3),
                     Space::new().width(Length::Fill),
-                    text("在游戏内管理").size(10).color(s.text_muted),
+                    text("在游戏内管理").size(12).color(s.text_muted),
                 ]
                 .spacing(9)
                 .align_y(iced::Alignment::Center),
@@ -1922,14 +2064,14 @@ fn server_page(app: &App, t: f32) -> Element<'_, Message> {
                 } else {
                     "安装/启动前会要求同意 Minecraft EULA"
                 })
-                .size(11)
+                .size(12)
                 .color(s.text_faint),
-                button(text("查看 EULA").size(11))
+                button(text("查看 EULA").size(12))
                     .padding(4.0)
                     .style(style::secondary)
                     .on_press(Message::OpenEula),
                 Space::new().width(Length::Fill),
-                button(text("打开服务端目录").size(11))
+                button(text("打开服务端目录").size(12))
                     .padding(4.0)
                     .style(style::secondary)
                     .on_press(Message::OpenServerFolder),
@@ -1938,18 +2080,18 @@ fn server_page(app: &App, t: f32) -> Element<'_, Message> {
             .align_y(iced::Alignment::Center),
             row![install_btn, start_btn, join_btn, join_now_btn, stop_btn].spacing(8),
             text(format!("服务端目录: {server_dir}"))
-                .size(10)
+                .size(12)
                 .color(s.text_faint),
             text("说明：Fabric 版本会使用 Fabric Server（加载 mods/）；原版版本使用原版服务端。")
-                .size(10)
+                .size(12)
                 .color(s.text_faint),
             if app.config.server_online_mode {
                 text("正版验证已开启：仅正版账号可加入。")
-                    .size(10)
+                    .size(12)
                     .color(s.text_faint)
             } else {
                 text("正版验证关闭（online-mode=false）：离线账号可从本机加入，请勿通过端口转发暴露服务。")
-                    .size(10)
+                    .size(12)
                     .color(s.danger)
             },
         ]
@@ -1962,7 +2104,7 @@ fn server_page(app: &App, t: f32) -> Element<'_, Message> {
         .iter()
         .rev()
         .take(800)
-        .map(|line| text(line.clone()).size(10).color(s.text_muted).into())
+        .map(|line| text(line.clone()).size(12).color(s.text_muted).into())
         .collect();
     let log_body: Element<Message> = if log_lines.is_empty() {
         text("尚无服务端日志。安装并启动后可在这里查看（最新在上）。")
@@ -2002,10 +2144,7 @@ fn server_page(app: &App, t: f32) -> Element<'_, Message> {
     .into()
 }
 
-// ── 设置页 ───────────────────────────────────────────────
-
-fn advanced_page(app: &App, t: f32) -> Element<'_, Message> {
-    let s = style::scheme_of(app.dark_mode);
+fn launch_advanced_content<'a>(app: &'a App, s: &'static style::Scheme) -> Element<'a, Message> {
     let graphics_picker = pick_list(
         vec![
             "default".to_string(),
@@ -2032,7 +2171,7 @@ fn advanced_page(app: &App, t: f32) -> Element<'_, Message> {
                 .size(13)
                 .style(style::checkbox_style),
             text("这两个开关适合儿童/展示机；单人游戏不受影响。")
-                .size(11)
+                .size(12)
                 .color(s.text_faint),
         ]
         .spacing(10)
@@ -2065,10 +2204,10 @@ fn advanced_page(app: &App, t: f32) -> Element<'_, Message> {
             .spacing(8)
             .align_y(iced::Alignment::Center),
             text("窗口尺寸会以 --width/--height 传入；图形后端对应 26.3 的 --graphicsBackend（default/opengl/vulkan）。")
-                .size(11)
+                .size(12)
                 .color(s.text_faint),
             text("全屏时窗口尺寸由游戏/显示器决定；Vulkan 不可用时客户端可能回退或报错。")
-                .size(11)
+                .size(12)
                 .color(s.text_faint),
         ]
         .spacing(10)
@@ -2076,18 +2215,13 @@ fn advanced_page(app: &App, t: f32) -> Element<'_, Message> {
     );
 
     column![
-        text("高级启动").size(28).color(s.text_primary),
-        text("这些参数在 26.3 的 Main 参数解析中已确认；旧版本可能忽略不支持的项。")
-            .size(11)
+        text("这些参数在 Minecraft 26.3 中可用；较旧版本可能忽略不支持的项。")
+            .size(12)
             .color(s.text_faint),
-        rule::horizontal(1.0).style(style::rule_style),
-        enter(t, 0.0, restrictions),
-        enter(t, 0.1, window_graphics),
-        text(app.status.as_str()).size(12).color(s.text_muted),
+        restrictions,
+        window_graphics,
     ]
-    .spacing(14)
-    .width(Length::Fill)
-    .height(Length::Fill)
+    .spacing(10)
     .into()
 }
 
@@ -2173,7 +2307,7 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
                 .size(13)
                 .style(style::checkbox_style),
             text("最低要求 Minecraft 26.3；当前已接入 26.3。关闭后仍可选择并下载其他正式版。下次会话生效；首次进入世界时自动安装 Fabric 与 Bridge。")
-                .size(11)
+                .size(12)
                 .color(s.text_faint),
             text_input(
                 "根目录，如 /home/xxx/Games/ObsidianLauncher",
@@ -2302,7 +2436,7 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
                     .size(12)
                     .style(style::checkbox_style),
                 text("仅作用于增强实例，保存后下次启动生效。默认保留 JDK 自动 GC 和内存策略；ZGC 优先降低停顿，可能增加 CPU 使用。")
-                    .size(10)
+                    .size(12)
                     .color(s.text_faint),
             ]
             .spacing(9)
@@ -2320,10 +2454,10 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
                 .size(12)
                 .color(s.text_muted),
             text("游戏实例的 saves/ 链接到这里；升级或重装游戏不会移动地图。")
-                .size(11)
+                .size(12)
                 .color(s.text_faint),
             text("旧版的版本隔离/存档隔离已停用；旧存档会在首次打开世界页时迁移并保留原目录。")
-                .size(11)
+                .size(12)
                 .color(s.text_faint),
         ]
         .spacing(10)

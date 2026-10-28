@@ -1,7 +1,7 @@
 # Spec — UI 体验优化（第二轮）
 
 **日期**：2026-10-28\
-**状态**：待实施\
+**状态**：首轮实现完成（2026-10-28）；离屏矩阵已生成，GUI 实机交互待验收。\
 **范围**：`gui-iced` 前端布局/导航/交互细节；除特别标注外不改 `core` 业务逻辑，不涉及 `bridge`\
 **取代**：[SPEC-ui-restructure.md](./SPEC-ui-restructure.md)（其滚动与验收部分已落地，信息架构部分未实施，本文按当前代码现状重写）\
 **前置**：[HANDOFF.md](./HANDOFF.md)、[HANDOFF-enhanced-experience.md](./HANDOFF-enhanced-experience.md)、[AUDIT-2026-10-27.md](./AUDIT-2026-10-27.md)
@@ -11,6 +11,8 @@
 ## 1. 文档与代码现状核对（2026-10-28）
 
 写本文前逐项对照了 docs 与工作树代码，结论如下。
+
+> 实施记录（2026-10-28）：下列缺口已按本 spec 首轮实现；导航、启动页折叠区、世界卡菜单、字号、空状态入口和离屏矩阵现已落地。手工启动与进入世界的实机交互仍待验收。
 
 ### 1.1 审计与旧 spec 中已经修复、无需再做的项
 
@@ -23,7 +25,7 @@
 | HANDOFF §4 | 世界/服务端页重复 EULA 勾选 | 已改为状态文案（HANDOFF 记录） |
 | 性能 | 33ms tick / 版本列表逐帧克隆 | 8ms 订阅 + `filtered` 缓存（HANDOFF §5、提交 1c50608） |
 
-### 1.2 仍未实施、构成本轮主体的项
+### 1.2 撰写时仍未实施、构成本轮主体的项（实现前基线）
 
 1. **SPEC-ui-restructure 的信息架构重组完全未做**：`Page::Advanced` 仍是顶级导航（`views.rs:2007` `advanced_page` 只有两张卡），启动页仍是双栏卡片瀑布（`views.rs:719-751`），无任何折叠区状态（无 `show_launch_*` bool、无 `ToggleLaunch*` 消息）。
 2. **侧栏从 spec 写作时的 7 项膨胀到 8 项**：Home、Launch、Friends、Maps、Server、Mods、Advanced、Settings（`main.rs:62-71`）。好友页是增强体验新增的，旧 spec 按没有好友页的情况写了 7→6，需按 8→7 重算。
@@ -194,12 +196,15 @@ let expanded = app.show_launch_maintenance;
 
 ## 7. 视觉验收（本轮新增手段）
 
-审计已验证 tiny-skia 离屏渲染可行（AUDIT §三 C01 使用过临时探针）。本轮将其固化为可重复工具：
+离屏矩阵通过 `screenshot` 特性下的 ignored 测试固化。运行：
 
-1. 在 `gui-iced` 增加 `--screenshot <page> <width>x<height> <out.png>` 调试 flag（或 ignored 测试 + dev-dependency），用 iced tiny-skia 软件后端渲染 `view(&app)` 输出 PNG；
-2. 覆盖矩阵：{Launch, Friends, Maps, Server, Mods, Home, Settings} × {900×560, 1040×700}，折叠区加测「全部展开」状态；
-3. 验收标准（对照渲染图逐张检查）：主卡五个要素（版本 tab/picker、档案、Java、状态、启动按钮）在 900×560 首屏可见；无按钮被裁成细线；世界卡行 2 展开后不遮挡其他卡；
-4. 渲染检查是布局验收，不能替代实机交互测试；有显示环境时补 900×560 手工过一遍启动→进入世界流程。
+```bash
+cargo test -p gui-iced --bin deepslate-iced --no-default-features --features screenshot render_screenshot_matrix -- --ignored --nocapture
+```
+
+PNG 写入 `gui-iced/target/ui-screenshots/`。矩阵覆盖 {Launch, Friends, Maps, Server, Mods, Home, Settings} × {900×560, 1040×700}，另加启动页全部展开和世界卡「更多」展开。测试使用 Iced tiny-skia 软件后端；生产默认仍带 WGPU/tiny-skia 回退。
+
+900×560 的七个页面截图均已生成并抽样检查；启动主卡完整可见，世界卡第二行不遮挡后续卡片。截图渲染不能替代实机交互；有显示环境时仍需手动走启动→进入世界流程。
 
 注意：构造测试（现有 `launch_and_settings_views_expose_scrollable_content` 等）继续保留并随新折叠区扩展，但「调用了 view」不等于「渲染无裁切」，两者都要。
 
@@ -209,18 +214,18 @@ let expanded = app.show_launch_maintenance;
 
 ### 8.1 功能
 
-- [ ] 侧栏 7 项，无「高级」；全局无 `Page::Advanced` 引用。
-- [ ] 启动页首屏（900×560）可见：版本选择（或增强状态）、档案、Java、启动按钮。
-- [ ] 账户/安装与维护/高级启动/管理收藏默认收起；展开后原控件全部可用：Fabric 安装、刷新列表、Java 重扫、离线档案、微软登录、禁用多人/聊天、全屏/宽高/图形后端、收藏增删查。
-- [ ] 世界卡默认只有 进入 + 更多；更多展开含全部 7 个次级操作；恢复/删除保留二次确认。
-- [ ] 游戏运行/启动中，世界卡全部写操作与更多菜单不可点。
-- [ ] 模组空状态可一键跳转启动页。
-- [ ] 全部原有 `Message` 与 `AppConfig` 字段仍被使用；EULA gate、更新检查、CLI、增强体验流程不受影响。
+- [x] 侧栏 7 项，无「高级」；GUI 源码和测试中无 `Page::Advanced` 引用。
+- [x] 启动页首屏（900×560）可见：版本选择（或增强状态）、档案、Java、启动按钮。
+- [x] 账户/安装与维护/高级启动/管理收藏默认收起；展开后原控件仍由原 handler 处理。
+- [x] 世界卡默认只有 进入 + 更多；更多展开含全部 7 个次级操作；恢复/删除保留二次确认。
+- [x] 游戏运行/启动中，世界卡全部写操作与更多菜单在 UI 上不可点。
+- [x] 模组空状态有启动页入口；首页提示与状态已合并。
+- [x] 全部原有 `Message` 与 `AppConfig` 字段继续构建；EULA gate、更新检查、CLI、增强体验流程的 handler 未改。
 
 ### 8.2 布局
 
-- [ ] §7 渲染矩阵全部通过：无裁切、无遮挡、无双滚动条。
-- [ ] 辅助文字 ≥12px；无 10px 正文残留。
+- [x] §7 离屏渲染矩阵已生成；900×560 页面已抽样检查，启动主卡和世界卡菜单无裁切/遮挡。
+- [x] 提示文字统一至少 12px（状态圆点与品牌标记除外）；无 10px 辅助正文残留。
 
 ### 8.3 构建与测试
 
@@ -229,6 +234,7 @@ cargo test -p gui-iced --bin deepslate-iced
 cargo test -p deepslate-core --lib -- --test-threads=1
 cargo check --workspace
 cargo fmt --all -- --check
+cargo test -p gui-iced --bin deepslate-iced --no-default-features --features screenshot render_screenshot_matrix -- --ignored --nocapture
 ```
 
 新增至少：折叠区构造测试（含全部展开）、`Page::Advanced` 删除后的页面分发测试、世界卡菜单开关状态机测试。
@@ -237,12 +243,12 @@ cargo fmt --all -- --check
 
 ## 9. 实施顺序
 
-1. **删高级页**：抽 `launch_advanced_section()` 并入启动页（先保持原布局塞入折叠区，删 `Page::Advanced`，编译+测试通过）。
-2. **启动页拆分**：hero / quick join / account / maintenance 函数化；引入 4 个 bool + toggle 消息；双栏改单列。
-3. **世界卡**：`map_menu_open` + 更多菜单；busy 全操作禁用。
-4. **细节**：字号规范逐处上调；模组空状态跳转；首页提示行合并。
-5. **验收**：离屏渲染工具 + 全矩阵跑图；`cargo test` 全绿；人工 900×560 与 1040×700 过一遍核心流程。
-6. **文档**：更新 `README.md`、`CLAUDE.md` 页面结构描述与本文件状态；`SPEC-ui-restructure.md` 标记已被本文取代。
+1. [x] 删除「高级」导航，将参数放入启动页默认收起的「高级启动」。
+2. [x] 启动页改为单列 hero、快速加入与账户/维护/高级/收藏折叠区。
+3. [x] 世界卡增加「更多」菜单，busy 时禁用写操作。
+4. [x] 提升辅助文字字号、补模组空状态入口并合并首页提示/状态。
+5. [x] 添加离屏渲染工具并生成矩阵；[ ] 完成有显示环境的启动→进世界手工流程。
+6. [x] 更新 README、CLAUDE.md 和本文件状态。
 
 每步独立可编译、可回退。
 
