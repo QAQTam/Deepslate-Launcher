@@ -62,6 +62,7 @@ fn core_event_sender() -> mpsc::Sender<CoreEvent> {
 enum Page {
     Home,
     Launch,
+    Friends,
     Maps,
     Server,
     Mods,
@@ -74,6 +75,7 @@ impl Page {
         match self {
             Page::Home => "首页",
             Page::Launch => "启动",
+            Page::Friends => "好友",
             Page::Maps => "世界",
             Page::Server => "服务器",
             Page::Mods => "模组",
@@ -109,6 +111,9 @@ struct App {
     selected_version: Option<launcher::download::VersionInfo>,
     profiles: Vec<UserProfile>,
     selected_profile: Option<UserProfile>,
+    friends: launcher::friends::FriendSnapshot,
+    friends_loading: bool,
+    friend_error: Option<String>,
     new_profile_name: String,
     java_list: Vec<launcher::launch::JavaInfo>,
     selected_java: Option<launcher::launch::JavaInfo>,
@@ -250,6 +255,9 @@ impl App {
             selected_version: None,
             profiles: Vec::new(),
             selected_profile: None,
+            friends: launcher::friends::FriendSnapshot::default(),
+            friends_loading: false,
+            friend_error: None,
             new_profile_name: String::new(),
             java_list: Vec::new(),
             selected_java: None,
@@ -389,6 +397,8 @@ enum Message {
     VersionsLoaded(Result<Vec<launcher::download::VersionInfo>, String>),
     LocalVersionsLoaded(std::path::PathBuf, Vec<launcher::versions::LocalVersion>),
     ProfilesLoaded(Result<ProfileStore, String>),
+    FriendsLoaded(String, Result<launcher::friends::FriendSnapshot, String>),
+    FriendSnapshotSaved(String, Result<(), String>),
     JavaLoaded(Vec<launcher::launch::JavaInfo>),
     TabChanged(VersionTab),
     VersionSelected(launcher::download::VersionInfo),
@@ -569,6 +579,8 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 load_saves_task(app)
             } else if page == Page::Mods {
                 load_mods_task(app)
+            } else if page == Page::Friends {
+                load_friends_task(app)
             } else {
                 Task::none()
             }
@@ -671,7 +683,8 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 })
                 .cloned()
                 .or_else(|| app.profiles.first().cloned());
-            Task::none()
+            app.friends = launcher::friends::FriendSnapshot::default();
+            load_friends_task(app)
         }
         Message::ProfilesLoaded(Err(e)) => {
             app.status = format!("加载档案失败: {}", e);
@@ -704,7 +717,8 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::ProfileSelected(p) => {
             app.selected_profile = Some(p);
-            Task::none()
+            app.friends = launcher::friends::FriendSnapshot::default();
+            load_friends_task(app)
         }
         Message::JavaSelected(j) => {
             app.selected_java = Some(j);
@@ -726,12 +740,51 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.new_profile_name.clear();
             app.profiles.push(profile.clone());
             app.selected_profile = Some(profile);
-            Task::none()
+            app.friends = launcher::friends::FriendSnapshot::default();
+            load_friends_task(app)
         }
         Message::ProfileCreated(Err(e)) => {
             app.status = format!("创建档案失败: {}", e);
             Task::none()
         }
+        Message::FriendsLoaded(account_id, Ok(snapshot)) => {
+            if app
+                .selected_profile
+                .as_ref()
+                .is_some_and(|profile| profile.uuid == account_id)
+                && snapshot.updated_at >= app.friends.updated_at
+            {
+                app.friends = snapshot;
+                app.friends_loading = false;
+                app.friend_error = None;
+            }
+            Task::none()
+        }
+        Message::FriendsLoaded(account_id, Err(error)) => {
+            if app
+                .selected_profile
+                .as_ref()
+                .is_some_and(|profile| profile.uuid == account_id)
+                && app.friends.updated_at == 0
+            {
+                app.friends_loading = false;
+                app.friends = launcher::friends::FriendSnapshot::default();
+                app.friend_error = Some(error.clone());
+                app.status = format!("加载好友列表失败: {error}");
+            }
+            Task::none()
+        }
+        Message::FriendSnapshotSaved(account_id, Err(error)) => {
+            if app
+                .selected_profile
+                .as_ref()
+                .is_some_and(|profile| profile.uuid == account_id)
+            {
+                app.status = format!("保存好友快照失败: {error}");
+            }
+            Task::none()
+        }
+        Message::FriendSnapshotSaved(_, Ok(())) => Task::none(),
         Message::RescanJava => {
             Task::perform(async { scan_java_async().await }, Message::JavaLoaded)
         }
@@ -892,8 +945,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 app.profiles.push(profile.clone());
             }
             app.selected_profile = Some(profile.clone());
+            app.friends = launcher::friends::FriendSnapshot::default();
             app.status = format!("Microsoft 登录成功: {}", profile.name);
-            Task::none()
+            load_friends_task(app)
         }
         Message::MsLoginFinished(Err(e)) => {
             app.ms_logging_in = false;
@@ -927,6 +981,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.mods_version = None;
             app.profiles.clear();
             app.selected_profile = None;
+            app.friends = launcher::friends::FriendSnapshot::default();
+            app.friends_loading = false;
+            app.friend_error = None;
             app.pending_select = None;
             app.refilter();
             app.eula_accepted = launcher::eula::is_accepted(&app.config);
@@ -994,6 +1051,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.eula_error = None;
             app.profiles.clear();
             app.selected_profile = None;
+            app.friends = launcher::friends::FriendSnapshot::default();
+            app.friends_loading = false;
+            app.friend_error = None;
             app.status = "所有配置已重置".to_string();
             Task::perform(
                 async { launcher::profiles::load() },
@@ -1979,6 +2039,26 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 }
                 Task::none()
             }
+            CoreEvent::FriendsSnapshot {
+                profile_id,
+                snapshot,
+            } => {
+                if app
+                    .selected_profile
+                    .as_ref()
+                    .is_some_and(|profile| profile.uuid == profile_id)
+                    && snapshot.updated_at >= app.friends.updated_at
+                {
+                    app.friends = snapshot.clone();
+                    app.friends_loading = false;
+                    app.friend_error = None;
+                }
+                let account_id = profile_id.clone();
+                Task::perform(
+                    async move { launcher::friends::save_snapshot_for(&account_id, &snapshot) },
+                    move |result| Message::FriendSnapshotSaved(profile_id, result),
+                )
+            }
             CoreEvent::BridgeState { state, message } => {
                 let phase = state
                     .strip_prefix("phase_")
@@ -2136,6 +2216,23 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
 }
 
 /// 加载全局地图库。地图库与版本解耦，`instance/saves` 会链接到 `<root>/maps`。
+fn load_friends_task(app: &mut App) -> Task<Message> {
+    let Some(profile) = app.selected_profile.as_ref() else {
+        app.friends = launcher::friends::FriendSnapshot::default();
+        app.friends_loading = false;
+        app.friend_error = None;
+        return Task::none();
+    };
+    let account_id = profile.uuid.clone();
+    app.friends_loading = true;
+    app.friend_error = None;
+    let task_account_id = account_id.clone();
+    Task::perform(
+        async move { launcher::friends::load_for(&task_account_id) },
+        move |result| Message::FriendsLoaded(account_id, result),
+    )
+}
+
 fn load_saves_task(app: &mut App) -> Task<Message> {
     let config = app.config.clone();
     let root = config.root_dir.clone();
@@ -3190,6 +3287,9 @@ mod switch_perf {
             selected_version: selected,
             profiles,
             selected_profile: None,
+            friends: launcher::friends::FriendSnapshot::default(),
+            friends_loading: false,
+            friend_error: None,
             new_profile_name: String::new(),
             selected_java: java_list.first().cloned(),
             java_list,

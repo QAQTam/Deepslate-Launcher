@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "deepslate-bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "name": "Deepslate Bridge",
   "environment": "client",
   "entrypoints": { "client": ["org.deepslate.bridge.BridgeClient"] },

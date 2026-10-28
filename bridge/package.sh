@@ -9,4 +9,4 @@ else
     "$gradle_bin" build
 fi
 mkdir -p ../core/assets
-cp build/libs/deepslate-bridge-0.2.0.jar ../core/assets/deepslate-bridge-0.2.0.jar
+cp build/libs/deepslate-bridge-0.3.0.jar ../core/assets/deepslate-bridge-0.3.0.jar

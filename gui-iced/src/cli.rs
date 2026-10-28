@@ -292,7 +292,9 @@ pub(super) fn run_cli_launch(args: &[String]) -> i32 {
                         eprintln!("{} {line}", if is_stderr { "SE" } else { "SO" });
                     }
                     CoreEvent::ServerState(state) => eprintln!("[server] {state:?}"),
-                    CoreEvent::DownloadProgress(_) | CoreEvent::AuthProgress(_) => {}
+                    CoreEvent::DownloadProgress(_)
+                    | CoreEvent::AuthProgress(_)
+                    | CoreEvent::FriendsSnapshot { .. } => {}
                 }
             }
         });

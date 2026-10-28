@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Current handoff and the next UI refactor spec live in `docs/current/` (`HANDOFF.md`, `SPEC-ui-restructure.md`).
+Current handoff and the next UI optimization spec live in `docs/current/` (`HANDOFF.md`, `SPEC-ui-optimization.md`; the older `SPEC-ui-restructure.md` is superseded).
 
 ## Project Overview
 

@@ -17,6 +17,11 @@ pub enum CoreEvent {
         state: String,
         message: Option<String>,
     },
+    /// Snapshot read from Minecraft 26.3's PlayerSocialManager/FriendsService.
+    FriendsSnapshot {
+        profile_id: String,
+        snapshot: crate::friends::FriendSnapshot,
+    },
     /// 游戏进程的一行输出（stdout/stderr 已捕获为管道）
     GameLog {
         is_stderr: bool,

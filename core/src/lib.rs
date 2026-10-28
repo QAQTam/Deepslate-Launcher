@@ -13,6 +13,7 @@ pub mod enhanced;
 pub mod eula;
 pub mod events;
 pub mod fabric;
+pub mod friends;
 pub mod game_options;
 pub mod launch;
 pub mod maps;

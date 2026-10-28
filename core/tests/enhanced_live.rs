@@ -69,8 +69,10 @@ async fn existing_world_saves_and_client_exits() {
             name: "Bridge Test Create".into(),
             seed: "42".into(),
             mode: "creative".into(),
+            difficulty: "normal".into(),
             preset: "flat".into(),
             cheats: true,
+            rules: core::bridge::WorldGameRules::default(),
         }
     } else {
         core::bridge::ManagedTarget::Open(id.clone())

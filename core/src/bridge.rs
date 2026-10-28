@@ -8,7 +8,7 @@ use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
 
 const PROTOCOL: u64 = 2;
-const MAX_MESSAGE: usize = 65536;
+const MAX_MESSAGE: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct WorldGameRules {
@@ -96,6 +96,7 @@ pub struct BridgeListener {
     listener: TcpListener,
     session_id: String,
     token: String,
+    owner_profile_id: Option<String>,
     description: PathBuf,
 }
 
@@ -108,9 +109,27 @@ pub struct BridgeConnection {
 impl BridgeListener {
     /// Credentials are owner-only. Platforms without a secure implementation fail closed.
     pub async fn bind(cache: &Path) -> Result<Self, String> {
+        Self::bind_for_profile_inner(cache, None).await
+    }
+
+    /// Bind a session to the selected launcher profile so native friend snapshots
+    /// can be cached under the same Minecraft account.
+    pub async fn bind_for_profile(cache: &Path, profile_id: &str) -> Result<Self, String> {
+        let profile_id = uuid::Uuid::parse_str(profile_id)
+            .map_err(|_| "当前档案 UUID 无效，无法同步好友列表".to_string())?
+            .hyphenated()
+            .to_string();
+        Self::bind_for_profile_inner(cache, Some(profile_id)).await
+    }
+
+    async fn bind_for_profile_inner(
+        cache: &Path,
+        owner_profile_id: Option<String>,
+    ) -> Result<Self, String> {
         #[cfg(not(unix))]
         {
             let _ = cache;
+            let _ = owner_profile_id;
             return Err("当前平台尚未实现受保护的 Bridge 会话文件".into());
         }
         #[cfg(unix)]
@@ -138,7 +157,8 @@ impl BridgeListener {
                 serde_json::to_writer(
                     &mut file,
                     &json!({"session_id": session_id, "token": token,
-                    "port": listener.local_addr().map_err(|e| e.to_string())?.port()}),
+                    "port": listener.local_addr().map_err(|e| e.to_string())?.port(),
+                    "profile_id": owner_profile_id}),
                 )
                 .map_err(|e| e.to_string())?;
                 Ok(())
@@ -151,6 +171,7 @@ impl BridgeListener {
                 listener,
                 session_id,
                 token,
+                owner_profile_id,
                 description,
             })
         }
@@ -277,6 +298,7 @@ pub async fn run_world_session_with_commands(
         state: state.to_string(),
         message: None,
     };
+    let owner_profile_id = listener.owner_profile_id.clone();
     let _ = events.send(emit("waiting_for_bridge")).await;
     let mut connection = listener.accept(Duration::from_secs(90)).await?;
     let _ = events.send(emit("connected")).await;
@@ -296,6 +318,27 @@ pub async fn run_world_session_with_commands(
             .and_then(Value::as_str)
             .unwrap_or("");
         match kind {
+            "FriendSnapshot" => {
+                let Some(profile_id) = owner_profile_id.as_ref() else {
+                    continue;
+                };
+                let Some(value) = event.get("snapshot").cloned() else {
+                    continue;
+                };
+                let Ok(snapshot) = serde_json::from_value::<crate::friends::FriendSnapshot>(value)
+                else {
+                    continue;
+                };
+                if crate::friends::validate_snapshot(&snapshot).is_err() {
+                    continue;
+                }
+                let _ = events
+                    .send(crate::events::CoreEvent::FriendsSnapshot {
+                        profile_id: profile_id.clone(),
+                        snapshot,
+                    })
+                    .await;
+            }
             "Status" => {
                 let request_matches = if sent {
                     event_request == request

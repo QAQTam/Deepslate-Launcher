@@ -1552,7 +1552,7 @@ pub async fn launch(
 
     let bridge = if opt.managed_world.is_some() {
         let cache = crate::runtime::paths(opt.map_config.as_ref().unwrap()).cache_dir;
-        Some(crate::bridge::BridgeListener::bind(&cache).await?)
+        Some(crate::bridge::BridgeListener::bind_for_profile(&cache, &opt.uuid).await?)
     } else {
         None
     };

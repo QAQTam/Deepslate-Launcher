@@ -4,7 +4,7 @@ use iced::widget::column;
 // ── 视图 ─────────────────────────────────────────────────
 
 pub(super) fn page_requires_outer_scroll(page: Page) -> bool {
-    matches!(page, Page::Launch | Page::Settings)
+    matches!(page, Page::Launch | Page::Friends | Page::Settings)
 }
 
 pub(super) fn view(app: &App) -> Element<'_, Message> {
@@ -36,6 +36,7 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
             Space::new().height(Length::from(20)),
             nav(Page::Home),
             nav(Page::Launch),
+            nav(Page::Friends),
             nav(Page::Maps),
             nav(Page::Server),
             nav(Page::Mods),
@@ -257,6 +258,7 @@ fn page_view(app: &App) -> Element<'_, Message> {
     let page = match app.page {
         Page::Launch => launch_page(app, t),
         Page::Home => home_page(app, t),
+        Page::Friends => friends_page(app, t),
         Page::Maps => maps_page(app, t),
         Page::Server => server_page(app, t),
         Page::Mods => mods_page(app, t),
@@ -1598,6 +1600,212 @@ fn mods_page(app: &App, t: f32) -> Element<'_, Message> {
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
+}
+
+fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
+    let s = style::scheme_of(app.dark_mode);
+    let account = app
+        .selected_profile
+        .as_ref()
+        .map(|profile| profile.name.as_str())
+        .unwrap_or("尚未选择账号");
+    let service_state = match app.friends.service_state.as_str() {
+        "success" => "已连接 Mojang 好友服务",
+        "loading" => "正在同步 Mojang 好友服务",
+        "upgrade_needed" => "需要更新 Minecraft 才能使用好友服务",
+        "connection_issue" => "好友服务连接异常",
+        "user_may_lack_active_profile" => "当前账号没有可用的 Java 玩家档案",
+        "unauthorized" => "当前账号无法访问好友服务",
+        "temporary_unavailable" => "好友服务暂时不可用",
+        "generic_error" => "好友服务发生错误",
+        _ => "尚未从 Minecraft 同步",
+    };
+    let sync_label = if app.friends.updated_at == 0 {
+        "等待从增强模式世界或服务器首次同步"
+    } else {
+        "好友数据来自 Minecraft 官方好友服务"
+    };
+    let settings_label = if app.friends.updated_at == 0 {
+        "好友列表设置将在首次同步后显示".to_string()
+    } else {
+        format!(
+            "好友列表{} · 好友申请{}",
+            if app.friends.enabled {
+                "已开启"
+            } else {
+                "已关闭"
+            },
+            if app.friends.allow_requests {
+                "已开放"
+            } else {
+                "已关闭"
+            }
+        )
+    };
+    let overview = section_card(
+        s,
+        "Minecraft 官方好友服务",
+        column![
+            row![
+                text(format!("当前账号: {account}")).size(12).color(s.text_muted),
+                Space::new().width(Length::Fill),
+                text(format!("{} 位好友", app.friends.friends.len()))
+                    .size(11)
+                    .color(s.text_faint),
+            ]
+            .align_y(iced::Alignment::Center),
+            text(service_state).size(13).color(s.text_primary),
+            text(sync_label).size(11).color(s.text_faint),
+            text(settings_label).size(11).color(s.text_faint),
+            text(format!(
+                "申请：收到 {} · 已发送 {}",
+                app.friends.incoming_requests.len(),
+                app.friends.outgoing_requests.len()
+            ))
+            .size(11)
+            .color(s.text_faint),
+            text("在游戏内 Minecraft 官方好友页面发送、接受或撤回好友申请；启动器展示最近一次同步的列表与请求。")
+                .size(11)
+                .color(s.text_muted),
+        ]
+        .spacing(8)
+        .into(),
+    );
+
+    let list_body: Element<'_, Message> = if app.friends_loading {
+        text("正在读取此账号的本地好友快照…")
+            .size(12)
+            .color(s.text_muted)
+            .into()
+    } else if let Some(error) = &app.friend_error {
+        text(format!("无法读取好友快照: {error}"))
+            .size(12)
+            .color(s.danger)
+            .into()
+    } else if app.selected_profile.is_none() {
+        text("请先在「启动」页选择或创建 Minecraft 账号档案。")
+            .size(12)
+            .color(s.text_muted)
+            .into()
+    } else if app.friends.friends.is_empty() {
+        text("此账号当前没有已同步的好友。进入增强模式世界或服务器后，好友列表会从 Minecraft 26.3 官方服务同步。")
+            .size(12)
+            .color(s.text_muted)
+            .into()
+    } else {
+        column(app.friends.friends.iter().map(|friend| {
+            let id_hint = friend.profile_id.chars().take(8).collect::<String>();
+            let presence = friend
+                .presence
+                .as_deref()
+                .map(friend_presence_label)
+                .unwrap_or("状态未知");
+            container(
+                row![
+                    column![
+                        text(friend.name.clone()).size(13).color(s.text_primary),
+                        text(format!("Minecraft 玩家 · {id_hint}"))
+                            .size(10)
+                            .color(s.text_faint),
+                    ]
+                    .spacing(3),
+                    Space::new().width(Length::Fill),
+                    text(presence).size(10).color(s.text_muted),
+                ]
+                .spacing(9)
+                .align_y(iced::Alignment::Center),
+            )
+            .padding(10)
+            .style(style::card)
+            .into()
+        }))
+        .spacing(8)
+        .into()
+    };
+    let list_card = section_card(s, "好友", list_body);
+    let incoming = friends_request_card(
+        s,
+        "收到的申请",
+        &app.friends.incoming_requests,
+        "暂无收到的好友申请。",
+    );
+    let outgoing = friends_request_card(
+        s,
+        "已发送的申请",
+        &app.friends.outgoing_requests,
+        "暂无待处理的好友申请。",
+    );
+
+    column![
+        enter(
+            t,
+            0.0,
+            column![
+                text("好友").size(28).color(s.text_primary),
+                text("Minecraft 原生好友关系同步到启动器；邀请联机将在好友服务之外单独扩展。")
+                    .size(12)
+                    .color(s.text_muted),
+                rule::horizontal(1.0).style(style::rule_style),
+            ]
+            .spacing(8)
+            .into(),
+        ),
+        enter(t, 0.08, overview),
+        enter(t, 0.16, list_card),
+        enter(t, 0.24, incoming),
+        enter(t, 0.32, outgoing),
+    ]
+    .spacing(14)
+    .width(Length::Fill)
+    .into()
+}
+
+fn friend_presence_label(status: &str) -> &'static str {
+    match status {
+        "online" => "在线",
+        "playing_offline" => "单人游戏",
+        "playing_realms" => "正在游玩 Realms",
+        "playing_server" => "正在游玩服务器",
+        "playing_hosted_server" => "正在游玩托管服务器",
+        "offline" => "离线",
+        _ => "状态未知",
+    }
+}
+
+fn friends_request_card<'a>(
+    s: &'a style::Scheme,
+    title: &'a str,
+    entries: &'a [launcher::friends::FriendEntry],
+    empty_label: &'a str,
+) -> Element<'a, Message> {
+    let body: Element<'_, Message> = if entries.is_empty() {
+        text(empty_label).size(12).color(s.text_muted).into()
+    } else {
+        column(entries.iter().map(|friend| {
+            let id_hint = friend.profile_id.chars().take(8).collect::<String>();
+            container(
+                row![
+                    column![
+                        text(friend.name.clone()).size(13).color(s.text_primary),
+                        text(format!("Minecraft 玩家 · {id_hint}"))
+                            .size(10)
+                            .color(s.text_faint),
+                    ]
+                    .spacing(3),
+                    Space::new().width(Length::Fill),
+                    text("在游戏内管理").size(10).color(s.text_muted),
+                ]
+                .spacing(9)
+                .align_y(iced::Alignment::Center),
+            )
+            .padding(10)
+            .style(style::card)
+            .into()
+        }))
+        .spacing(8)
+        .into()
+    };
+    section_card(s, title, body)
 }
 
 fn server_page(app: &App, t: f32) -> Element<'_, Message> {
