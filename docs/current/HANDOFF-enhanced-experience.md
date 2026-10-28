@@ -7,7 +7,7 @@
 工作树包含大量本任务之前及本任务中的未提交、未跟踪文件；不要整体重置、覆盖或清理。原 `docs/current/HANDOFF.md` 是较早的 EULA/UI 交接，并非本功能的现状。用户提供的 `4689596882874350247@3@0.jar` 和 `/home/qaqtamsy/Projects/dwq/26.3.jar` 保持原样；没有运行网易 JAR。
 
 - `bridge/`：独立 Fabric 26.3 客户端模组，Java 25、Loom 1.19.3；`bridge/package.sh` 构建并更新内嵌 JAR。分发与 Git 追踪策略见 [Bridge 分发设计](./DESIGN-bridge-distribution.md)。
-- `core/assets/deepslate-bridge-0.3.0.jar`：当前 Rust 内嵌构建产物，必须随源码变化重新构建；与当前 `bridge/build/libs/` 的同名 JAR SHA-256 均为 `c674b1b0441c680e1079a273a3a3c80fad54a86855974e985b9728e65979e75f`。该摘要只是当前状态，不是长期版本号或信任锚。
+- `core/assets/deepslate-bridge-0.4.0.jar`：当前 Rust 内嵌构建产物，必须随 Bridge 源码变化重新构建；与 `bridge/build/libs/deepslate-bridge-0.4.0.jar` SHA-256 均为 `82a8b04736c311c9140855bdbc26f305e4be6bc0bb269fdedee790ca54373b5c`。该摘要只是当前状态，不是长期版本号或信任锚。
 - `core/src/enhanced.rs`、`fabric.rs`：26.3 的组件解析、校验、代次和安装；`config/enhanced-runtime.lock.json` 指向组件代次。
 - `core/src/bridge.rs`、`launch.rs`、`events.rs`：本机 TCP/JSON 握手、受管会话、世界操作与进程生命周期。
 - `core/src/runtime.rs`、`maps.rs`、`mods.rs`：增强实例、共享地图库、备份、待恢复创建任务与模组目录。
@@ -39,10 +39,15 @@
 
 ## 2026-10-28 好友首版
 
-- 新增 `core/src/friends.rs`：按启动器档案 UUID 独立缓存 Minecraft 的真实好友快照到 `<root>/config/friends/<uuid>.json`，包括好友、收到/发出的申请、好友服务状态、列表设置和 presence。缓存有大小、UUID、字段和文件权限校验；启动器不伪造或直接写入好友关系。
-- 启动器「好友」页改为只读展示上次同步的原生好友数据、presence 和请求列表。提示用户在 Minecraft 原生好友页面发送、接受、撤回申请；好友关系变更仍由 Minecraft 官方好友界面处理。
-- Bridge 0.3.0 使用 Minecraft 26.3 的 `PlayerSocialManager` 读取好友和申请，并通过 `PresenceHandler` 读取 presence；监听原生好友列表更新，同时每 30 秒重新发送当前快照。好友服务本身的网络刷新仍由 Minecraft 管理。Rust Bridge 依据启动档案 UUID 将快照送入启动器事件总线并按账号缓存。原生 `FriendsOverlayScreen` 未被替换；已撤掉此前错误接管旧 `SocialInteractionsScreen` 的 Mixin 和 mock 好友 UI。
-- `bridge/package.sh` 已构建并更新 `core/assets/deepslate-bridge-0.3.0.jar`，源码与内嵌 JAR SHA-256 均为 `c674b1b0441c680e1079a273a3a3c80fad54a86855974e985b9728e65979e75f`；Fabric/Gradle 编译、`cargo fmt --all -- --check`、`cargo check --workspace` 和 `git diff --check` 通过。没有运行测试或启动游戏实测；真实账号下好友列表、好友服务状态、presence 更新和原生申请操作仍需隔离增强实例验收。
+- 首版以只读方式把 MC 26.3 的好友快照缓存到 `<root>/config/friends/<uuid>.json`；启动器页面也曾说明关系操作仍交给 Mojang 好友服务。该实现已由下方 0.4.0 接管路径取代。
+
+## 2026-10-28 启动器主导好友数据（Bridge 0.4.0）
+
+- 保留 Minecraft 原生好友 Overlay、好友/申请 Tab、列表项、确认弹窗和按钮。`MinecraftMixin` 在 `MinecraftServicesDiscoveryService.createFriendsService` 调用点直接返回 Bridge 适配器，不创建 Mojang Authlib 好友服务对象，也不把登录 access token 传给它；Minecraft 登录、Xbox/XSTS/Minecraft 登录认证、多人服务器认证和屏蔽玩家 API 保持原样。
+- 权威好友数据按账户 UUID 存在启动器 `<root>/config/friends/<uuid>.json`。启动器生成并保存 `DL1-<UUIDv4>` 好友码，好友页面可复制、添加好友码、接受/拒绝/撤回申请、删除好友和修改好友列表设置。游戏启动握手后接收快照；游戏原生 UI 发起的动作通过 Bridge 回到启动器验证、落盘，再把新快照推回游戏。
+- Java `DeepslateFriendsService` 现在只是游戏进程内存镜像，不再自行生成或持久化好友数据。Bridge 同步按启动器账户 UUID 校验，游戏快照不再覆盖启动器存储。Presence 目前为空；好友码申请在联网发现接线前只会本机保存，尚未送达对方。
+- Authlib 好友服务与 Presence 的远端调用被替代；联网发现、安全握手和真正跨设备送达仍未实现。
+- Bridge 与内嵌资源仍为 0.4.0（尚未发布）。Fabric/Gradle 构建、`cargo check --workspace` 和 `git diff --check` 通过；Gradle 报告 `test NO-SOURCE`，没有运行测试。尚未启动 Minecraft 验证服务工厂重定向、Bridge 好友双向同步、中文资源和原生控件操作；这些需在隔离增强实例确认。
 
 ## 关键剩余工作（按规格，非完整验收结论）
 

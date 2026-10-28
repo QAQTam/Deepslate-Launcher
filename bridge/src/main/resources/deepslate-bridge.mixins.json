@@ -1,1 +1,1 @@
-{ "required": true, "package": "org.deepslate.bridge.mixin", "compatibilityLevel": "JAVA_25", "client": ["MinecraftMixin", "LoadingOverlayMixin", "LevelLoadTrackerAccessor", "LevelLoadingScreenAccessor"], "injectors": { "defaultRequire": 1 } }
+{ "required": true, "package": "org.deepslate.bridge.mixin", "compatibilityLevel": "JAVA_25", "client": ["MinecraftMixin", "AddFriendWidgetMixin", "LoadingOverlayMixin", "LevelLoadTrackerAccessor", "LevelLoadingScreenAccessor"], "injectors": { "defaultRequire": 1 } }

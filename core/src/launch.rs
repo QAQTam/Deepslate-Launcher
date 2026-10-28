@@ -31,16 +31,48 @@ use crate::net;
 static GAME_PROCESS: Mutex<Option<u32>> = Mutex::new(None);
 static GAME_HANDLE: std::sync::LazyLock<tokio::sync::Mutex<Option<Child>>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(None));
-static BRIDGE_QUIT: std::sync::LazyLock<tokio::sync::Mutex<Option<mpsc::Sender<()>>>> =
-    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(None));
+static BRIDGE_COMMANDS: std::sync::LazyLock<
+    tokio::sync::Mutex<Option<(String, mpsc::Sender<crate::bridge::BridgeCommand>)>>,
+> = std::sync::LazyLock::new(|| tokio::sync::Mutex::new(None));
 
 /// Ask the managed client to save and exit through Minecraft's normal lifecycle.
 pub async fn quit_managed_game() -> Result<(), String> {
-    let sender = BRIDGE_QUIT.lock().await.clone().ok_or("没有受管游戏会话")?;
+    let sender = BRIDGE_COMMANDS
+        .lock()
+        .await
+        .as_ref()
+        .map(|(_, sender)| sender.clone())
+        .ok_or("没有受管游戏会话")?;
     sender
-        .send(())
+        .send(crate::bridge::BridgeCommand::Quit)
         .await
         .map_err(|_| "Bridge 会话已断开".into())
+}
+
+/// Push the launcher-owned friend state into the active game for this account.
+pub async fn sync_managed_friends(
+    profile_id: &str,
+    snapshot: crate::friends::FriendSnapshot,
+) -> Result<bool, String> {
+    let profile_id = uuid::Uuid::parse_str(profile_id)
+        .map_err(|_| "档案 UUID 无效，无法同步好友数据".to_string())?
+        .hyphenated()
+        .to_string();
+    let session = BRIDGE_COMMANDS.lock().await.clone();
+    let Some((active_profile, sender)) = session else {
+        return Ok(false);
+    };
+    if active_profile != profile_id {
+        return Ok(false);
+    }
+    sender
+        .send(crate::bridge::BridgeCommand::SyncFriends {
+            profile_id: active_profile,
+            snapshot,
+        })
+        .await
+        .map_err(|_| "Bridge 好友同步通道已断开".to_string())?;
+    Ok(true)
 }
 
 const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest.json";
@@ -1675,8 +1707,12 @@ pub async fn launch(
         (Some(listener), Some(target)) => {
             let events = events.clone();
             let entered = entered.clone();
-            let (sender, receiver) = mpsc::channel(1);
-            *BRIDGE_QUIT.lock().await = Some(sender);
+            let (sender, receiver) = mpsc::channel(16);
+            let active_profile = uuid::Uuid::parse_str(&opt.uuid)
+                .map_err(|_| "档案 UUID 无效，无法接入好友同步".to_string())?
+                .hyphenated()
+                .to_string();
+            *BRIDGE_COMMANDS.lock().await = Some((active_profile, sender));
             Some(tokio::spawn(async move {
                 let result = crate::bridge::run_world_session_with_commands(
                     listener,
@@ -1724,7 +1760,7 @@ pub async fn launch(
     } else {
         Ok(())
     };
-    *BRIDGE_QUIT.lock().await = None;
+    *BRIDGE_COMMANDS.lock().await = None;
 
     {
         let mut pid_guard = GAME_PROCESS.lock().map_err(|e| e.to_string())?;

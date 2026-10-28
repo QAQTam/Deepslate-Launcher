@@ -1,7 +1,6 @@
 package org.deepslate.bridge;
 
 import com.google.gson.JsonObject;
-import com.google.gson.JsonArray;
 import com.google.gson.JsonParser;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents;
@@ -22,7 +21,6 @@ import net.minecraft.client.gui.screens.DisconnectedScreen;
 import net.minecraft.client.gui.screens.LevelLoadingScreen;
 import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.gui.screens.social.PlayerSocialManager;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
@@ -46,16 +44,12 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.HashMap;
-import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.Collections;
-import java.util.UUID;
 import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Client-side half of the launcher session. No connection means ordinary Minecraft behavior. */
+/** Client-side half of the launcher session; managed friends are owned by the launcher. */
 public final class BridgeClient implements ClientModInitializer {
     private static final int PROTOCOL = 2;
     private static final int MAX_SESSION_BYTES = 65536;
@@ -72,14 +66,12 @@ public final class BridgeClient implements ClientModInitializer {
     private final Set<String> requests = ConcurrentHashMap.newKeySet();
     private volatile PrintWriter output;
     private volatile boolean authenticated;
+    private volatile boolean friendsSyncReceived;
     private boolean ready;
     private boolean loading;
     private boolean entered;
     private boolean connectingServer;
     private boolean firstChunkReported;
-    private boolean friendListenerInstalled;
-    private long lastFriendSnapshotNanos;
-    private Runnable friendUpdateListener;
     private String operation;
     private volatile String phase = "client_starting";
     private volatile String lastReportedPhase = "";
@@ -160,10 +152,20 @@ public final class BridgeClient implements ClientModInitializer {
         return line.isEmpty() ? null : line.toString();
     }
     private void handle(JsonObject command) {
-        String request = command.has("request_id") ? command.get("request_id").getAsString() : "";
-        if (request.isBlank() || !requests.add(request)) return;
         String type = command.get("type").getAsString();
         Minecraft mc = Minecraft.getInstance();
+        if (type.equals("SyncFriends")) {
+            JsonObject snapshot = command.getAsJsonObject("snapshot");
+            if (snapshot == null) return;
+            DeepslateFriendsService.get().replaceFromLauncher(snapshot);
+            var social = mc.getPlayerSocialManager();
+            social.setFriendListEnabled(booleanValue(snapshot, "enabled"));
+            social.setAllowFriendRequests(booleanValue(snapshot, "allow_requests"));
+            friendsSyncReceived = true;
+            return;
+        }
+        String request = command.has("request_id") ? command.get("request_id").getAsString() : "";
+        if (request.isBlank() || !requests.add(request)) return;
         if (type.equals("JoinServer")) {
             String address = command.get("address").getAsString().trim();
             if (!ready || loading || entered || address.isEmpty() || address.length() > 255 ||
@@ -265,6 +267,12 @@ public final class BridgeClient implements ClientModInitializer {
         } else failure(request, "Unknown command");
     }
 
+    private static boolean booleanValue(JsonObject object, String key) {
+        return object.has(key) && object.get(key).isJsonPrimitive()
+                && object.getAsJsonPrimitive(key).isBoolean()
+                && object.get(key).getAsBoolean();
+    }
+
     private static PendingGameRules parseGameRules(JsonObject object) {
         if (object == null) throw new IllegalArgumentException("Missing game rules");
         return new PendingGameRules(
@@ -285,8 +293,7 @@ public final class BridgeClient implements ClientModInitializer {
     }
 
     private void tick(Minecraft mc) {
-        if (authenticated) syncFriendsIfNeeded(mc);
-        if (!ready && authenticated && mc.isGameLoadFinished() && mc.gui.screen() instanceof TitleScreen && mc.gui.overlay() == null) {
+        if (!ready && authenticated && friendsSyncReceived && mc.isGameLoadFinished() && mc.gui.screen() instanceof TitleScreen && mc.gui.overlay() == null) {
             mc.gui.setScreen(new WaitingScreen());
             ready = true;
             report("ready", -1);
@@ -299,70 +306,6 @@ public final class BridgeClient implements ClientModInitializer {
             connectingServer = false;
             failure(operation, "Server connection was cancelled or failed");
         }
-    }
-
-    /** Read the same Mojang FriendsService state used by Minecraft's native Friends screen. */
-    private void syncFriendsIfNeeded(Minecraft mc) {
-        PlayerSocialManager social = mc.getPlayerSocialManager();
-        if (!friendListenerInstalled) {
-            friendUpdateListener = () -> mc.execute(() -> sendFriendSnapshot(mc, social));
-            social.addFriendListUpdateListener(friendUpdateListener);
-            friendListenerInstalled = true;
-            sendFriendSnapshot(mc, social);
-            return;
-        }
-        long now = System.nanoTime();
-        if (now - lastFriendSnapshotNanos >= 30_000_000_000L) {
-            sendFriendSnapshot(mc, social);
-        }
-    }
-
-    private void sendFriendSnapshot(Minecraft mc, PlayerSocialManager social) {
-        if (!authenticated || mc.getPlayerSocialManager() != social) return;
-        JsonObject snapshot = new JsonObject();
-        snapshot.addProperty("service_state", social.getFriendListState().name().toLowerCase(Locale.ROOT));
-        snapshot.addProperty("enabled", social.isFriendListEnabled());
-        snapshot.addProperty("allow_requests", social.isAllowFriendRequests());
-
-        Map<UUID, String> presenceByProfile = new HashMap<>();
-        var presence = social.getPresenceHandler().getLatestPresence();
-        if (presence != null && presence.presence() != null) {
-            for (var status : presence.presence()) {
-                if (status.profileId() != null && status.status() != null) {
-                    presenceByProfile.put(status.profileId(), status.status().name().toLowerCase(Locale.ROOT));
-                }
-            }
-        }
-        snapshot.add("friends", friendEntries(social.getFriends(), presenceByProfile));
-        snapshot.add("incoming_requests", friendEntries(social.getIncomingRequests(), Map.of()));
-        snapshot.add("outgoing_requests", friendEntries(social.getOutgoingRequests(), Map.of()));
-        snapshot.addProperty("updated_at", System.currentTimeMillis());
-
-        JsonObject event = message("FriendSnapshot", "");
-        event.add("snapshot", snapshot);
-        send(event);
-        lastFriendSnapshotNanos = System.nanoTime();
-    }
-
-    private static JsonArray friendEntries(
-            java.util.List<PlayerSocialManager.PlayerData> players,
-            Map<UUID, String> presenceByProfile) {
-        JsonArray entries = new JsonArray();
-        int count = Math.min(players.size(), 1000);
-        for (int index = 0; index < count; index++) {
-            PlayerSocialManager.PlayerData player = players.get(index);
-            if (player.id() == null || player.name() == null || player.name().isBlank() || player.name().length() > 64) {
-                continue;
-            }
-            JsonObject entry = new JsonObject();
-            entry.addProperty("profile_id", player.id().toString());
-            entry.addProperty("name", player.name());
-            String presence = presenceByProfile.get(player.id());
-            if (presence != null) entry.addProperty("presence", presence);
-            else entry.add("presence", null);
-            entries.add(entry);
-        }
-        return entries;
     }
 
     private void registerFabricEvents() {
@@ -465,6 +408,10 @@ public final class BridgeClient implements ClientModInitializer {
     public static boolean isManagedSession() {
         return session != null;
     }
+    public static boolean isManagedLaunch() {
+        String path = System.getenv("DEEPSLATE_BRIDGE_SESSION");
+        return path != null && !path.isBlank();
+    }
     public static boolean isManagedWorldLoading() {
         return session != null && session.loading;
     }
@@ -493,6 +440,13 @@ public final class BridgeClient implements ClientModInitializer {
     }
     public static void reportProgress(String stage, int progress) {
         if (session != null) session.report(stage, progress);
+    }
+    public static boolean submitFriendAction(JsonObject action) {
+        BridgeClient current = session;
+        if (current == null || !current.authenticated || action == null) return false;
+        JsonObject event = current.message("FriendAction", "");
+        event.add("action", action);
+        return current.send(event);
     }
     private synchronized void report(String nextPhase, int progress) {
         if (nextPhase == null || nextPhase.length() > 64) return;
@@ -540,15 +494,15 @@ public final class BridgeClient implements ClientModInitializer {
         result.addProperty("type", type);
         return result;
     }
-    private synchronized void send(JsonObject value) {
+    private synchronized boolean send(JsonObject value) {
         PrintWriter writer = output;
-        if (writer != null) {
-            String line = value.toString();
-            if (line.getBytes(StandardCharsets.UTF_8).length + 1 > MAX_LINE) {
-                System.err.println("Deepslate Bridge message too large; dropped " + value.get("type"));
-                return;
-            }
-            writer.println(line);
+        if (writer == null) return false;
+        String line = value.toString();
+        if (line.getBytes(StandardCharsets.UTF_8).length + 1 > MAX_LINE) {
+            System.err.println("Deepslate Bridge message too large; dropped " + value.get("type"));
+            return false;
         }
+        writer.println(line);
+        return !writer.checkError();
     }
 }

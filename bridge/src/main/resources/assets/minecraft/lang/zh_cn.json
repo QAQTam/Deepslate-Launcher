@@ -1,0 +1,20 @@
+{
+  "options.friendsList": "Deepslate 好友",
+  "options.friendsList.confirm.title": "Deepslate 好友",
+  "options.friendsList.confirm.message": "启用 Deepslate 好友列表。好友码和关系由启动器管理，并同步到游戏；跨设备网络发现尚未启用。",
+  "options.allowFriendRequests": "允许收到 Deepslate 好友申请",
+  "options.allowFriendRequests.tooltip": "网络好友连接接入后，允许其他玩家向你发送好友申请",
+  "gui.friends.open": "好友",
+  "gui.friends.open.narration": "Deepslate 好友列表",
+  "gui.friends.open.tooltip": "Deepslate 好友",
+  "gui.friends.empty_state": "添加到启动器的 Deepslate 好友会显示在这里。好友码和申请保存在启动器账户中，跨设备网络发现将在后续版本接入。",
+  "gui.friends.enter_nickname": "输入 Deepslate 好友码",
+  "gui.friends.empty_nickname": "请输入有效的 Deepslate 好友码",
+  "gui.friends.send_request": "保存好友申请",
+  "gui.friends.my_profile_name": "你的 Deepslate 好友码： ",
+  "gui.friends.my_profile_name.narration": "复制 Deepslate 好友码 %s 到剪贴板",
+  "gui.friends.manage_account_footer": "好友由 Deepslate 启动器管理；跨设备连接尚未启用。",
+  "gui.friends.toast.request_sent.message": "启动器已保存发往 %s 的好友申请；联网发现接入前，对方尚未收到。",
+  "gui.friends.error.user_may_lack_active_profile": "没有找到该 Deepslate 好友码",
+  "gui.friends.validation.cannot_add_self": "不能添加自己的好友码"
+}

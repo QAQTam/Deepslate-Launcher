@@ -111,12 +111,15 @@ pub(super) fn run_cli_install_fabric(args: &[String]) -> i32 {
             },
         };
 
-        let version_id = launcher::fabric::version_id(&game, &loader);
         let opts = launcher::fabric::InstallOptions {
             game_version: game.clone(),
             loader_version: loader.clone(),
             game_dir: game_dir.clone(),
-            instance_dir: launcher::config::get_version_root(&config, &version_id),
+            instance_dir: launcher::runtime::paths_for_mode(
+                &config,
+                launcher::runtime::RuntimeMode::Normal,
+            )
+            .instance_dir,
             concurrency,
         };
 

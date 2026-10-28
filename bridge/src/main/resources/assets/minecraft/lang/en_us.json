@@ -1,0 +1,20 @@
+{
+  "options.friendsList": "Deepslate Friends",
+  "options.friendsList.confirm.title": "Deepslate Friends",
+  "options.friendsList.confirm.message": "Enable Deepslate Friends. The launcher manages friend codes and relationships and syncs them to the game; cross-device discovery is not enabled yet.",
+  "options.allowFriendRequests": "Allow Deepslate friend requests",
+  "options.allowFriendRequests.tooltip": "Allow other players to send requests after network friend connections are enabled",
+  "gui.friends.open": "Friends",
+  "gui.friends.open.narration": "Deepslate Friends List",
+  "gui.friends.open.tooltip": "Deepslate Friends",
+  "gui.friends.empty_state": "Deepslate friends added in the launcher will be listed here. Friend codes and requests are stored with your launcher account until cross-device discovery is enabled.",
+  "gui.friends.enter_nickname": "Enter Deepslate friend code",
+  "gui.friends.empty_nickname": "Enter a valid Deepslate friend code",
+  "gui.friends.send_request": "Save friend request",
+  "gui.friends.my_profile_name": "Your Deepslate friend code: ",
+  "gui.friends.my_profile_name.narration": "Copy Deepslate friend code %s to clipboard",
+  "gui.friends.manage_account_footer": "Friends are managed by the Deepslate launcher; cross-device connections are not enabled yet.",
+  "gui.friends.toast.request_sent.message": "The launcher saved a friend request for %s; it has not reached them yet.",
+  "gui.friends.error.user_may_lack_active_profile": "No Deepslate friend code was found",
+  "gui.friends.validation.cannot_add_self": "You cannot add your own friend code"
+}

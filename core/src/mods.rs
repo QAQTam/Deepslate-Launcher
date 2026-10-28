@@ -55,13 +55,15 @@ impl ModInfo {
     }
 }
 
-pub fn mods_dir(config: &crate::config::AppConfig, version: &str) -> PathBuf {
+pub fn mods_dir(config: &crate::config::AppConfig, _version: &str) -> PathBuf {
     if config.enhanced_experience {
         return crate::runtime::paths_for_mode(config, crate::runtime::RuntimeMode::Enhanced)
             .instance_dir
             .join("mods");
     }
-    crate::config::get_version_root(config, version).join("mods")
+    crate::runtime::paths_for_mode(config, crate::runtime::RuntimeMode::Normal)
+        .instance_dir
+        .join("mods")
 }
 
 pub fn ensure_dir(dir: &Path) -> Result<(), String> {

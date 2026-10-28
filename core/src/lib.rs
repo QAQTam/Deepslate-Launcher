@@ -17,6 +17,7 @@ pub mod friends;
 pub mod game_options;
 pub mod launch;
 pub mod maps;
+pub mod migration;
 pub mod mods;
 pub mod nbt;
 pub mod net;

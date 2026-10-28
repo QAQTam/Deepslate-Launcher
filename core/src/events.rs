@@ -17,7 +17,7 @@ pub enum CoreEvent {
         state: String,
         message: Option<String>,
     },
-    /// Snapshot read from Minecraft 26.3's PlayerSocialManager/FriendsService.
+    /// Authoritative launcher friend data changed by the launcher or game UI.
     FriendsSnapshot {
         profile_id: String,
         snapshot: crate::friends::FriendSnapshot,

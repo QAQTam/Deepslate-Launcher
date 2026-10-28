@@ -4,11 +4,17 @@ use iced::widget::column;
 // ── 视图 ─────────────────────────────────────────────────
 
 pub(super) fn page_requires_outer_scroll(page: Page) -> bool {
-    matches!(page, Page::Launch | Page::Friends | Page::Settings)
+    matches!(
+        page,
+        Page::Launch | Page::Friends | Page::Maps | Page::Settings
+    )
 }
 
 pub(super) fn view(app: &App) -> Element<'_, Message> {
     let s = style::scheme_of(app.dark_mode);
+    if app.onboarding && !app.eula_required {
+        return onboarding_view(app);
+    }
 
     let nav = |page: Page| {
         let active = app.page == page;
@@ -76,6 +82,228 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     } else {
         main
     }
+}
+
+fn onboarding_view(app: &App) -> Element<'_, Message> {
+    let s = style::scheme_of(app.dark_mode);
+    let content: Element<Message> = if app.onboarding_step == 0 {
+        column![
+            text("欢迎使用 Deepslate").size(28).color(s.text_primary),
+            text("首先创建离线账户或登录微软账户。账户 UUID 用于识别世界中的玩家数据。")
+                .size(14)
+                .color(s.text_muted),
+            row![
+                text_input("离线用户名", &app.new_profile_name)
+                    .on_input(Message::NewProfileNameChanged)
+                    .on_submit(Message::CreateProfile)
+                    .style(style::text_field),
+                button("创建离线账户")
+                    .on_press(Message::CreateProfile)
+                    .style(style::secondary)
+            ]
+            .spacing(8),
+            ms_login_section(app, s),
+            text(
+                app.selected_profile
+                    .as_ref()
+                    .map(|p| format!("当前账户：{} · {}", p.name, p.uuid))
+                    .unwrap_or_else(|| "尚未选择账户".into())
+            )
+            .size(13)
+            .color(s.text_muted),
+            button("下一步")
+                .on_press(Message::OnboardingNext)
+                .style(style::primary)
+        ]
+        .spacing(14)
+        .into()
+    } else {
+        column![text("导入 Minecraft 数据").size(28).color(s.text_primary), text("可选：选择游戏目录或包含游戏目录的文件夹进行扫描，也可以稍后在世界页导入。请先退出原游戏。").size(14).color(s.text_muted), migration_section(app), button("进入启动器").on_press(Message::OnboardingFinish).style(style::primary)].spacing(14).into()
+    };
+    container(
+        scrollable(
+            column![
+                content,
+                text(app.status.as_str()).size(13).color(s.text_muted)
+            ]
+            .spacing(16),
+        )
+        .height(Length::Fill),
+    )
+    .padding(32)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(style::page)
+    .into()
+}
+
+fn migration_section(app: &App) -> Element<'_, Message> {
+    let s = style::scheme_of(app.dark_mode);
+    let mut content = column![
+        row![
+            button(if app.migration_busy {
+                "处理中…"
+            } else {
+                "选择目录并扫描"
+            })
+            .on_press(Message::MigrationPick)
+            .style(style::secondary),
+            button("选择模组文件夹")
+                .on_press(Message::MigrationPickMods)
+                .style(style::secondary),
+            text("选择 .minecraft、启动器目录或磁盘中的文件夹").size(12)
+        ]
+        .spacing(8),
+        text("扫描最多 8 层；不会跟随目录链接。版本与网络协议来自匹配的客户端，未知时不会猜测。")
+            .size(12)
+            .color(s.text_muted)
+    ]
+    .spacing(8);
+    if app.migration_cancel.is_some() {
+        content = content.push(
+            button("取消扫描")
+                .on_press(Message::MigrationCancel)
+                .style(style::secondary),
+        );
+    }
+    if let Some(scan) = &app.migration {
+        if !scan.worlds.is_empty() {
+            content = content.push(
+                button("导入全部发现的世界")
+                    .on_press(Message::MigrationImportAllWorlds)
+                    .style(style::secondary),
+            );
+        }
+        for dir in &scan.directories {
+            content = content.push(text(format!("候选游戏目录：{}", dir.display())).size(12));
+        }
+        for world in &scan.worlds {
+            let details = format!(
+                "{} · {} · 数据版本 {} · 协议 {}",
+                world.name,
+                if world.version.is_empty() {
+                    "未知"
+                } else {
+                    &world.version
+                },
+                world
+                    .data_version
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "未知".into()),
+                world
+                    .protocol
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "未知".into())
+            );
+            content = content.push(
+                column![
+                    row![
+                        text(details).size(12).width(Length::Fill),
+                        button("导入世界")
+                            .on_press(Message::MigrationImportWorld(world.path.clone()))
+                            .style(style::secondary)
+                    ]
+                    .spacing(8),
+                    text(world.path.display().to_string())
+                        .size(12)
+                        .color(s.text_muted)
+                        .width(Length::Fill)
+                ]
+                .spacing(3),
+            );
+        }
+        for version in &scan.versions {
+            if let Some(loader) = &version.loader {
+                let mods = version.run_dir.join("mods");
+                let mut line = row![].spacing(8);
+                if version.game_name.as_deref() == Some("26.3") {
+                    line = line.push(
+                        button("安装此 Fabric 版本")
+                            .on_press(Message::MigrationInstallFabric(
+                                "26.3".into(),
+                                loader.clone(),
+                            ))
+                            .style(style::secondary),
+                    );
+                }
+                if mods.is_dir() {
+                    line = line.push(
+                        button("导入模组")
+                            .on_press(Message::MigrationImportMods(mods))
+                            .style(style::secondary),
+                    );
+                }
+                if version.run_dir.join("config").is_dir() {
+                    line = line.push(
+                        button("导入配置")
+                            .on_press(Message::MigrationImportConfig(
+                                version.run_dir.join("config"),
+                            ))
+                            .style(style::secondary),
+                    );
+                }
+                content = content.push(
+                    column![
+                        text(format!(
+                            "Fabric {} · {} · 候选目录 {}",
+                            loader,
+                            version.game_name.as_deref().unwrap_or("游戏版本未知"),
+                            version.run_dir.display()
+                        ))
+                        .size(12)
+                        .width(Length::Fill),
+                        line
+                    ]
+                    .spacing(4),
+                );
+            }
+        }
+        for dir in &scan.directories {
+            let mods = dir.join("mods");
+            if mods.is_dir() {
+                content = content.push(
+                    row![
+                        text(format!("共享模组目录：{}", mods.display()))
+                            .size(12)
+                            .width(Length::Fill),
+                        button("导入模组")
+                            .on_press(Message::MigrationImportMods(mods))
+                            .style(style::secondary)
+                    ]
+                    .spacing(8),
+                );
+            }
+            let config = dir.join("config");
+            if config.is_dir() {
+                content = content.push(
+                    column![
+                        text(format!("共享配置目录：{}", config.display()))
+                            .size(12)
+                            .width(Length::Fill),
+                        button("导入配置")
+                            .on_press(Message::MigrationImportConfig(config))
+                            .style(style::secondary)
+                    ]
+                    .spacing(4),
+                );
+            }
+        }
+        content=content.push(text("导入模组前请先安装并选择对应的 Fabric 版本；模组依赖和配置需检查。多个来源的模组会进入同一普通游戏目录。").size(12).color(s.text_muted));
+        for warning in scan.warnings.iter().take(5) {
+            content = content.push(
+                text(format!("扫描提示：{warning}"))
+                    .size(12)
+                    .color(s.text_muted),
+            );
+        }
+    }
+    section_card(
+        s,
+        "扫描并导入 Minecraft 数据",
+        scrollable(content.padding([0, 16]))
+            .height(Length::Fixed(260.0))
+            .into(),
+    )
 }
 
 /// 主窗口内的 EULA 模态。全窗遮罩 + `opaque`，底层控件不会接收点击。
@@ -1077,26 +1305,31 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
     .spacing(10)
     .align_y(iced::Alignment::Center);
 
-    let import_row = row![
-        text_input("地图 zip 或世界文件夹路径", &app.map_import_path)
-            .on_input(Message::MapImportPathChanged)
-            .on_submit(Message::ImportMap)
-            .style(style::text_field),
-        button(text("导入").size(13))
-            .padding(7.0)
-            .style(style::primary)
-            .on_press(Message::ImportMap),
-        button(text("选 zip").size(12))
-            .padding(7.0)
-            .style(style::secondary)
-            .on_press(Message::PickMapFile),
-        button(text("选文件夹").size(12))
-            .padding(7.0)
-            .style(style::secondary)
-            .on_press(Message::PickMapFolder),
+    let import_row = column![
+        row![
+            text_input("地图 zip 或世界文件夹路径", &app.map_import_path)
+                .on_input(Message::MapImportPathChanged)
+                .on_submit(Message::ImportMap)
+                .style(style::text_field),
+            button(text("导入").size(13))
+                .padding(7.0)
+                .style(style::primary)
+                .on_press(Message::ImportMap)
+        ]
+        .spacing(8),
+        row![
+            button(text("选择 zip").size(12))
+                .padding(7.0)
+                .style(style::secondary)
+                .on_press(Message::PickMapFile),
+            button(text("选择世界文件夹").size(12))
+                .padding(7.0)
+                .style(style::secondary)
+                .on_press(Message::PickMapFolder)
+        ]
+        .spacing(8),
     ]
-    .spacing(8)
-    .align_y(iced::Alignment::Center);
+    .spacing(8);
 
     let list: Element<Message> = if app.saves.is_empty() {
         column![
@@ -1271,6 +1504,13 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
                 ]
                 .spacing(6);
 
+                if let Some(source) = &world.manifest.migrated_from {
+                    body = body.push(
+                        text(format!("导入来源：{source}"))
+                            .size(12)
+                            .color(s.text_faint),
+                    );
+                }
                 if app.map_menu_open.as_deref() == Some(world.id.as_str()) {
                     body = body.push(
                         row![
@@ -1321,9 +1561,7 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
             })
             .collect::<Vec<_>>();
 
-        scrollable(column(rows).spacing(10))
-            .height(Length::Fill)
-            .into()
+        column(rows).spacing(10).into()
     };
 
     let gamemode_picker = pick_list(
@@ -1519,14 +1757,16 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
         enter(t, 0.0, header.into()),
         enter(t, 0.08, toolbar.into()),
         enter(t, 0.10, import_row.into()),
+        enter(t, 0.22, list),
+        migration_section(app),
         enter(t, 0.14, new_world_card),
         enter(t, 0.18, pending_card),
-        enter(t, 0.22, list),
         text(app.status.as_str()).size(12).color(s.text_muted),
     ]
     .spacing(14)
+    .padding(iced::Padding::new(0.0).right(16.0))
     .width(Length::Fill)
-    .height(Length::Fill)
+    .height(Length::Shrink)
     .into()
 }
 
@@ -1746,81 +1986,91 @@ fn mods_page(app: &App, t: f32) -> Element<'_, Message> {
 
 fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
     let s = style::scheme_of(app.dark_mode);
-    let account = app
-        .selected_profile
-        .as_ref()
-        .map(|profile| profile.name.as_str())
-        .unwrap_or("尚未选择账号");
-    let service_state = match app.friends.service_state.as_str() {
-        "success" => "已连接 Mojang 好友服务",
-        "loading" => "正在同步 Mojang 好友服务",
-        "upgrade_needed" => "需要更新 Minecraft 才能使用好友服务",
-        "connection_issue" => "好友服务连接异常",
-        "user_may_lack_active_profile" => "当前账号没有可用的 Java 玩家档案",
-        "unauthorized" => "当前账号无法访问好友服务",
-        "temporary_unavailable" => "好友服务暂时不可用",
-        "generic_error" => "好友服务发生错误",
-        _ => "尚未从 Minecraft 同步",
-    };
-    let sync_label = if app.friends.updated_at == 0 {
-        "等待从增强模式世界或服务器首次同步"
-    } else {
-        "好友数据来自 Minecraft 官方好友服务"
-    };
-    let settings_label = if app.friends.updated_at == 0 {
-        "好友列表设置将在首次同步后显示".to_string()
-    } else {
-        format!(
-            "好友列表{} · 好友申请{}",
-            if app.friends.enabled {
-                "已开启"
-            } else {
-                "已关闭"
-            },
-            if app.friends.allow_requests {
-                "已开放"
-            } else {
-                "已关闭"
-            }
-        )
-    };
-    let overview = section_card(
+    let friends_enabled = app.friends.enabled;
+    let allow_friend_requests = app.friends.allow_requests;
+    let code_card = section_card(
         s,
-        "Minecraft 官方好友服务",
-        column![
-            row![
-                text(format!("当前账号: {account}")).size(12).color(s.text_muted),
-                Space::new().width(Length::Fill),
-                text(format!("{} 位好友", app.friends.friends.len()))
+        "我的好友码",
+        row![
+            column![
+                text(if app.friends.invite_code.is_empty() {
+                    "加载账户后生成好友码"
+                } else {
+                    app.friends.invite_code.as_str()
+                })
+                .size(16)
+                .color(s.text_primary),
+                text("好友码属于当前账户；联网发现接入前，对方输入后只会在本机保存待处理申请。")
                     .size(12)
-                    .color(s.text_faint),
+                    .color(s.text_muted),
             ]
-            .align_y(iced::Alignment::Center),
-            text(service_state).size(13).color(s.text_primary),
-            text(sync_label).size(12).color(s.text_faint),
-            text(settings_label).size(12).color(s.text_faint),
-            text(format!(
-                "申请：收到 {} · 已发送 {}",
-                app.friends.incoming_requests.len(),
-                app.friends.outgoing_requests.len()
-            ))
-            .size(12)
-            .color(s.text_faint),
-            text("在游戏内 Minecraft 官方好友页面发送、接受或撤回好友申请；启动器展示最近一次同步的列表与请求。")
-                .size(12)
-                .color(s.text_muted),
+            .spacing(5),
+            Space::new().width(Length::Fill),
+            button(text("复制好友码").size(12))
+                .on_press(Message::CopyFriendCode)
+                .style(style::secondary),
+        ]
+        .spacing(12)
+        .align_y(iced::Alignment::Center)
+        .into(),
+    );
+
+    let add_request = section_card(
+        s,
+        "添加好友",
+        row![
+            text_input("输入对方的 DL1 好友码", &app.friend_code_input)
+                .on_input(Message::FriendCodeChanged)
+                .on_submit(Message::SubmitFriendAction(
+                    launcher::friends::FriendAction::AddRequest {
+                        invite_code: app.friend_code_input.clone(),
+                    },
+                ))
+                .style(style::text_field),
+            button(text("添加").size(12))
+                .on_press(Message::SubmitFriendAction(
+                    launcher::friends::FriendAction::AddRequest {
+                        invite_code: app.friend_code_input.clone(),
+                    },
+                ))
+                .style(style::primary),
+        ]
+        .spacing(8)
+        .into(),
+    );
+
+    let controls = section_card(
+        s,
+        "好友列表设置",
+        column![
+            checkbox(friends_enabled)
+                .label("在 Minecraft 原生好友列表中启用好友")
+                .on_toggle(move |enabled| Message::SubmitFriendAction(
+                    launcher::friends::FriendAction::Settings {
+                        enabled,
+                        allow_requests: allow_friend_requests,
+                    },
+                )),
+            checkbox(allow_friend_requests)
+                .label("允许好友申请")
+                .on_toggle(move |allow_requests| Message::SubmitFriendAction(
+                    launcher::friends::FriendAction::Settings {
+                        enabled: friends_enabled,
+                        allow_requests,
+                    },
+                )),
         ]
         .spacing(8)
         .into(),
     );
 
     let list_body: Element<'_, Message> = if app.friends_loading {
-        text("正在读取此账号的本地好友快照…")
+        text("正在读取启动器好友数据…")
             .size(12)
             .color(s.text_muted)
             .into()
     } else if let Some(error) = &app.friend_error {
-        text(format!("无法读取好友快照: {error}"))
+        text(format!("无法读取好友数据: {error}"))
             .size(12)
             .color(s.danger)
             .into()
@@ -1830,29 +2080,31 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
             .color(s.text_muted)
             .into()
     } else if app.friends.friends.is_empty() {
-        text("此账号当前没有已同步的好友。进入增强模式世界或服务器后，好友列表会从 Minecraft 26.3 官方服务同步。")
+        text("暂无好友。添加好友码后，好友关系将保存在启动器账户中。")
             .size(12)
             .color(s.text_muted)
             .into()
     } else {
         column(app.friends.friends.iter().map(|friend| {
-            let id_hint = friend.profile_id.chars().take(8).collect::<String>();
-            let presence = friend
-                .presence
-                .as_deref()
-                .map(friend_presence_label)
-                .unwrap_or("状态未知");
+            let id = friend.profile_id.clone();
             container(
                 row![
                     column![
                         text(friend.name.clone()).size(13).color(s.text_primary),
-                        text(format!("Minecraft 玩家 · {id_hint}"))
-                            .size(12)
-                            .color(s.text_faint),
+                        text(format!(
+                            "玩家 ID · {}",
+                            id.chars().take(8).collect::<String>()
+                        ))
+                        .size(12)
+                        .color(s.text_faint),
                     ]
                     .spacing(3),
                     Space::new().width(Length::Fill),
-                    text(presence).size(12).color(s.text_muted),
+                    button(text("删除好友").size(11))
+                        .on_press(Message::SubmitFriendAction(
+                            launcher::friends::FriendAction::Remove { profile_id: id },
+                        ))
+                        .style(style::danger),
                 ]
                 .spacing(9)
                 .align_y(iced::Alignment::Center),
@@ -1870,12 +2122,16 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
         "收到的申请",
         &app.friends.incoming_requests,
         "暂无收到的好友申请。",
+        Some(("接受", accept_friend_action)),
+        Some(("拒绝", decline_friend_action)),
     );
     let outgoing = friends_request_card(
         s,
         "已发送的申请",
         &app.friends.outgoing_requests,
         "暂无待处理的好友申请。",
+        Some(("撤回", cancel_friend_action)),
+        None,
     );
 
     column![
@@ -1884,7 +2140,7 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
             0.0,
             column![
                 text("好友").size(28).color(s.text_primary),
-                text("Minecraft 原生好友关系同步到启动器；邀请联机将在好友服务之外单独扩展。")
+                text("启动器管理账户好友数据，并通过 Bridge 同步给 Minecraft；游戏内原生好友界面的操作也会回传。跨设备联网尚未接入。")
                     .size(12)
                     .color(s.text_muted),
                 rule::horizontal(1.0).style(style::rule_style),
@@ -1892,26 +2148,16 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
             .spacing(8)
             .into(),
         ),
-        enter(t, 0.08, overview),
-        enter(t, 0.16, list_card),
-        enter(t, 0.24, incoming),
-        enter(t, 0.32, outgoing),
+        enter(t, 0.08, code_card),
+        enter(t, 0.16, add_request),
+        enter(t, 0.24, controls),
+        enter(t, 0.32, list_card),
+        enter(t, 0.40, incoming),
+        enter(t, 0.48, outgoing),
     ]
     .spacing(14)
     .width(Length::Fill)
     .into()
-}
-
-fn friend_presence_label(status: &str) -> &'static str {
-    match status {
-        "online" => "在线",
-        "playing_offline" => "单人游戏",
-        "playing_realms" => "正在游玩 Realms",
-        "playing_server" => "正在游玩服务器",
-        "playing_hosted_server" => "正在游玩托管服务器",
-        "offline" => "离线",
-        _ => "状态未知",
-    }
 }
 
 fn friends_request_card<'a>(
@@ -1919,12 +2165,31 @@ fn friends_request_card<'a>(
     title: &'a str,
     entries: &'a [launcher::friends::FriendEntry],
     empty_label: &'a str,
+    primary: Option<(&'static str, fn(String) -> Message)>,
+    secondary: Option<(&'static str, fn(String) -> Message)>,
 ) -> Element<'a, Message> {
     let body: Element<'_, Message> = if entries.is_empty() {
         text(empty_label).size(12).color(s.text_muted).into()
     } else {
         column(entries.iter().map(|friend| {
-            let id_hint = friend.profile_id.chars().take(8).collect::<String>();
+            let id = friend.profile_id.clone();
+            let id_hint = id.chars().take(8).collect::<String>();
+            let primary_button: Element<'_, Message> = primary
+                .map(|(label, action)| {
+                    button(text(label).size(11))
+                        .on_press(action(id.clone()))
+                        .style(style::secondary)
+                        .into()
+                })
+                .unwrap_or_else(|| Space::new().width(0).into());
+            let secondary_button: Element<'_, Message> = secondary
+                .map(|(label, action)| {
+                    button(text(label).size(11))
+                        .on_press(action(id))
+                        .style(style::danger)
+                        .into()
+                })
+                .unwrap_or_else(|| Space::new().width(0).into());
             container(
                 row![
                     column![
@@ -1935,7 +2200,8 @@ fn friends_request_card<'a>(
                     ]
                     .spacing(3),
                     Space::new().width(Length::Fill),
-                    text("在游戏内管理").size(12).color(s.text_muted),
+                    primary_button,
+                    secondary_button,
                 ]
                 .spacing(9)
                 .align_y(iced::Alignment::Center),
@@ -1948,6 +2214,18 @@ fn friends_request_card<'a>(
         .into()
     };
     section_card(s, title, body)
+}
+
+fn accept_friend_action(profile_id: String) -> Message {
+    Message::SubmitFriendAction(launcher::friends::FriendAction::Accept { profile_id })
+}
+
+fn decline_friend_action(profile_id: String) -> Message {
+    Message::SubmitFriendAction(launcher::friends::FriendAction::Decline { profile_id })
+}
+
+fn cancel_friend_action(profile_id: String) -> Message {
+    Message::SubmitFriendAction(launcher::friends::FriendAction::Cancel { profile_id })
 }
 
 fn server_page(app: &App, t: f32) -> Element<'_, Message> {

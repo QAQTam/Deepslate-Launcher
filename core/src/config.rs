@@ -41,6 +41,9 @@ pub struct AppConfig {
     pub java_path: Option<String>,
     pub download_concurrency: usize,
     pub first_launch: bool,
+    /// None denotes configurations created before onboarding existed.
+    #[serde(default)]
+    pub onboarding_version: Option<u8>,
     pub ui_mode: String,
     /// 启动游戏时弹出独立日志窗口（子进程渲染游戏 stdout/stderr）
     #[serde(default)]
@@ -154,6 +157,7 @@ impl Default for AppConfig {
             java_path: None,
             download_concurrency: 32,
             first_launch: true,
+            onboarding_version: None,
             ui_mode: "dark".to_string(),
             log_window: false,
             enhanced_experience: false,

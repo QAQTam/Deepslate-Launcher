@@ -106,6 +106,15 @@ pub struct BridgeConnection {
     session_id: String,
 }
 
+#[derive(Debug, Clone)]
+pub enum BridgeCommand {
+    Quit,
+    SyncFriends {
+        profile_id: String,
+        snapshot: crate::friends::FriendSnapshot,
+    },
+}
+
 impl BridgeListener {
     /// Credentials are owner-only. Platforms without a secure implementation fail closed.
     pub async fn bind(cache: &Path) -> Result<Self, String> {
@@ -276,7 +285,7 @@ pub async fn run_world_session(
     map_id: &str,
     events: &tokio::sync::mpsc::Sender<crate::events::CoreEvent>,
 ) -> Result<(), String> {
-    let (_sender, receiver) = tokio::sync::mpsc::channel(1);
+    let (_sender, receiver) = tokio::sync::mpsc::channel::<BridgeCommand>(1);
     run_world_session_with_commands(
         listener,
         &ManagedTarget::Open(map_id.into()),
@@ -291,7 +300,7 @@ pub async fn run_world_session_with_commands(
     listener: BridgeListener,
     target: &ManagedTarget,
     events: &tokio::sync::mpsc::Sender<crate::events::CoreEvent>,
-    mut commands: tokio::sync::mpsc::Receiver<()>,
+    mut commands: tokio::sync::mpsc::Receiver<BridgeCommand>,
     entered: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<(), String> {
     let emit = |state: &str| crate::events::CoreEvent::BridgeState {
@@ -302,13 +311,29 @@ pub async fn run_world_session_with_commands(
     let _ = events.send(emit("waiting_for_bridge")).await;
     let mut connection = listener.accept(Duration::from_secs(90)).await?;
     let _ = events.send(emit("connected")).await;
+    let initial_snapshot = match owner_profile_id.as_deref() {
+        Some(profile_id) => crate::friends::load_for(profile_id)?,
+        None => crate::friends::FriendSnapshot::default(),
+    };
+    connection
+        .send("SyncFriends", "", json!({"snapshot": initial_snapshot}))
+        .await?;
     let request = Uuid::new_v4().to_string();
     let mut sent = false;
     loop {
         let event = tokio::select! {
             event = connection.receive() => event?,
-            Some(()) = commands.recv() => {
-                connection.send("QuitClient", &Uuid::new_v4().to_string(), json!({})).await?;
+            Some(command) = commands.recv() => {
+                match command {
+                    BridgeCommand::Quit => {
+                        connection.send("QuitClient", &Uuid::new_v4().to_string(), json!({})).await?;
+                    }
+                    BridgeCommand::SyncFriends { profile_id, snapshot } => {
+                        if owner_profile_id.as_deref() == Some(profile_id.as_str()) {
+                            connection.send("SyncFriends", "", json!({"snapshot": snapshot})).await?;
+                        }
+                    }
+                }
                 continue;
             }
         };
@@ -318,26 +343,38 @@ pub async fn run_world_session_with_commands(
             .and_then(Value::as_str)
             .unwrap_or("");
         match kind {
-            "FriendSnapshot" => {
+            "FriendAction" => {
                 let Some(profile_id) = owner_profile_id.as_ref() else {
                     continue;
                 };
-                let Some(value) = event.get("snapshot").cloned() else {
+                let Some(value) = event.get("action").cloned() else {
                     continue;
                 };
-                let Ok(snapshot) = serde_json::from_value::<crate::friends::FriendSnapshot>(value)
+                let Ok(action) = serde_json::from_value::<crate::friends::FriendAction>(value)
                 else {
                     continue;
                 };
-                if crate::friends::validate_snapshot(&snapshot).is_err() {
-                    continue;
+                match crate::friends::apply_action_for(profile_id, action) {
+                    Ok(snapshot) => {
+                        let _ = events
+                            .send(crate::events::CoreEvent::FriendsSnapshot {
+                                profile_id: profile_id.clone(),
+                                snapshot: snapshot.clone(),
+                            })
+                            .await;
+                        connection
+                            .send("SyncFriends", "", json!({"snapshot": snapshot}))
+                            .await?;
+                    }
+                    Err(message) => {
+                        let _ = events
+                            .send(crate::events::CoreEvent::BridgeState {
+                                state: "friend_action_failed".into(),
+                                message: Some(message),
+                            })
+                            .await;
+                    }
                 }
-                let _ = events
-                    .send(crate::events::CoreEvent::FriendsSnapshot {
-                        profile_id: profile_id.clone(),
-                        snapshot,
-                    })
-                    .await;
             }
             "Status" => {
                 let request_matches = if sent {
@@ -502,6 +539,10 @@ mod tests {
         let mut reader = BufReader::new(client);
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap(); // Welcome
+        line.clear();
+        reader.read_line(&mut line).await.unwrap();
+        let initial_sync: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(initial_sync["type"], "SyncFriends");
         let ready =
             json!({"protocol":2,"type":"Ready","session_id":info["session_id"],"request_id":""});
         reader

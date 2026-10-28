@@ -112,6 +112,7 @@ struct App {
     friends: launcher::friends::FriendSnapshot,
     friends_loading: bool,
     friend_error: Option<String>,
+    friend_code_input: String,
     new_profile_name: String,
     java_list: Vec<launcher::launch::JavaInfo>,
     selected_java: Option<launcher::launch::JavaInfo>,
@@ -161,6 +162,11 @@ struct App {
     saves: Vec<launcher::maps::MapSummary>,
     pending_creations: Vec<launcher::maps::PendingCreation>,
     map_import_path: String,
+    onboarding: bool,
+    onboarding_step: u8,
+    migration: Option<launcher::migration::ScanResult>,
+    migration_busy: bool,
+    migration_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pending_map_restore: Option<String>,
     active_map: Option<String>,
     renaming_save: Option<String>,
@@ -226,7 +232,11 @@ enum PendingAction {
 
 impl App {
     fn boot() -> (Self, Task<Message>) {
+        let config_exists = launcher::config::config_path()
+            .map(|p| p.join("config.json").exists())
+            .unwrap_or(true);
         let config = launcher::config::load().unwrap_or_default();
+        let onboarding = !config_exists || config.onboarding_version == Some(0);
         // 兼容旧版本：以前把“同意”只存在 config.json 里；现在以
         // <root>/eula.txt 为唯一凭据，启动时把旧状态迁移成标记文件。
         let mut eula_accepted = launcher::eula::is_accepted(&config);
@@ -265,6 +275,7 @@ impl App {
             friends: launcher::friends::FriendSnapshot::default(),
             friends_loading: false,
             friend_error: None,
+            friend_code_input: String::new(),
             new_profile_name: String::new(),
             java_list: Vec::new(),
             selected_java: None,
@@ -295,6 +306,11 @@ impl App {
             saves: Vec::new(),
             pending_creations: Vec::new(),
             map_import_path: String::new(),
+            onboarding,
+            onboarding_step: 0,
+            migration: None,
+            migration_busy: false,
+            migration_cancel: None,
             pending_map_restore: None,
             active_map: None,
             renaming_save: None,
@@ -411,7 +427,15 @@ enum Message {
     LocalVersionsLoaded(std::path::PathBuf, Vec<launcher::versions::LocalVersion>),
     ProfilesLoaded(Result<ProfileStore, String>),
     FriendsLoaded(String, Result<launcher::friends::FriendSnapshot, String>),
-    FriendSnapshotSaved(String, Result<(), String>),
+    FriendCodeChanged(String),
+    CopyFriendCode,
+    SubmitFriendAction(launcher::friends::FriendAction),
+    FriendActionSaved(
+        String,
+        launcher::friends::FriendAction,
+        Result<launcher::friends::FriendSnapshot, String>,
+    ),
+    FriendSyncFinished(String, Result<bool, String>),
     JavaLoaded(Vec<launcher::launch::JavaInfo>),
     TabChanged(VersionTab),
     VersionSelected(launcher::download::VersionInfo),
@@ -465,6 +489,20 @@ enum Message {
     SaveDeleted(Result<String, String>),
     MapImportPathChanged(String),
     ImportMap,
+    MigrationPick,
+    MigrationCancel,
+    MigrationPickMods,
+    MigrationModsPicked(Option<std::path::PathBuf>),
+    MigrationPicked(Option<std::path::PathBuf>),
+    MigrationScanned(Result<launcher::migration::ScanResult, String>),
+    MigrationImportWorld(std::path::PathBuf),
+    MigrationImportAllWorlds,
+    MigrationImportMods(std::path::PathBuf),
+    MigrationImportConfig(std::path::PathBuf),
+    MigrationInstallFabric(String, String),
+    MigrationDone(Result<String, String>),
+    OnboardingNext,
+    OnboardingFinish,
     MapImported(Result<String, String>),
     PickMapFile,
     PickMapFolder,
@@ -756,6 +794,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::ProfileSelected(p) => {
             app.selected_profile = Some(p);
             app.friends = launcher::friends::FriendSnapshot::default();
+            app.friend_code_input.clear();
             load_friends_task(app)
         }
         Message::JavaSelected(j) => {
@@ -767,6 +806,13 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::CreateProfile => {
+            if app.onboarding {
+                app.config.onboarding_version = Some(0);
+                if let Err(e) = launcher::config::save(&app.config) {
+                    app.status = format!("保存设置失败: {e}");
+                    return Task::none();
+                }
+            }
             let name = app.new_profile_name.trim().to_string();
             Task::perform(
                 async move { launcher::profiles::create(name) },
@@ -779,6 +825,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.profiles.push(profile.clone());
             app.selected_profile = Some(profile);
             app.friends = launcher::friends::FriendSnapshot::default();
+            app.friend_code_input.clear();
             load_friends_task(app)
         }
         Message::ProfileCreated(Err(e)) => {
@@ -812,17 +859,95 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::FriendSnapshotSaved(account_id, Err(error)) => {
+        Message::FriendCodeChanged(code) => {
+            app.friend_code_input = code;
+            Task::none()
+        }
+        Message::CopyFriendCode => {
+            if app.friends.invite_code.is_empty() {
+                app.status = "好友码尚未生成".into();
+                Task::none()
+            } else {
+                iced::clipboard::write(app.friends.invite_code.clone())
+            }
+        }
+        Message::SubmitFriendAction(action) => {
+            let Some(profile) = app.selected_profile.as_ref() else {
+                app.status = "请先选择一个 Minecraft 账户".into();
+                return Task::none();
+            };
+            let account_id = profile.uuid.clone();
+            let task_account_id = account_id.clone();
+            let task_action = action.clone();
+            Task::perform(
+                async move { launcher::friends::apply_action_for(&task_account_id, task_action) },
+                move |result| Message::FriendActionSaved(account_id, action, result),
+            )
+        }
+        Message::FriendActionSaved(account_id, action, Ok(snapshot)) => {
             if app
                 .selected_profile
                 .as_ref()
                 .is_some_and(|profile| profile.uuid == account_id)
             {
-                app.status = format!("保存好友快照失败: {error}");
+                if snapshot.updated_at >= app.friends.updated_at {
+                    app.friends = snapshot.clone();
+                    app.friend_error = None;
+                }
+                app.friend_code_input.clear();
+                app.status = match action {
+                    launcher::friends::FriendAction::AddRequest { .. } => {
+                        "已将好友申请保存到启动器；对方尚未收到（等待联网接入）".into()
+                    }
+                    _ => "好友数据已保存到启动器".into(),
+                };
+            }
+            let sync_profile = account_id.clone();
+            Task::perform(
+                async move { launcher::launch::sync_managed_friends(&sync_profile, snapshot).await },
+                move |result| Message::FriendSyncFinished(account_id, result),
+            )
+        }
+        Message::FriendActionSaved(account_id, _, Err(error)) => {
+            if app
+                .selected_profile
+                .as_ref()
+                .is_some_and(|profile| profile.uuid == account_id)
+            {
+                app.status = format!("好友操作失败: {error}");
             }
             Task::none()
         }
-        Message::FriendSnapshotSaved(_, Ok(())) => Task::none(),
+        Message::FriendSyncFinished(account_id, Ok(true)) => {
+            if app
+                .selected_profile
+                .as_ref()
+                .is_some_and(|profile| profile.uuid == account_id)
+            {
+                app.status = "好友数据已保存并同步到游戏".into();
+            }
+            Task::none()
+        }
+        Message::FriendSyncFinished(account_id, Ok(false)) => {
+            if app
+                .selected_profile
+                .as_ref()
+                .is_some_and(|profile| profile.uuid == account_id)
+            {
+                app.status = "好友数据已保存；下次启动游戏时同步".into();
+            }
+            Task::none()
+        }
+        Message::FriendSyncFinished(account_id, Err(error)) => {
+            if app
+                .selected_profile
+                .as_ref()
+                .is_some_and(|profile| profile.uuid == account_id)
+            {
+                app.status = format!("好友已保存在启动器，但同步到游戏失败: {error}");
+            }
+            Task::none()
+        }
         Message::RescanJava => {
             Task::perform(async { scan_java_async().await }, Message::JavaLoaded)
         }
@@ -952,6 +1077,13 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::MsLoginPressed => {
+            if app.onboarding {
+                app.config.onboarding_version = Some(0);
+                if let Err(e) = launcher::config::save(&app.config) {
+                    app.status = format!("保存设置失败: {e}");
+                    return Task::none();
+                }
+            }
             let Some(session) = app.ms_auth_session.take() else {
                 app.status = "请先打开微软登录页".to_string();
                 return Task::none();
@@ -1004,6 +1136,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 || app.server_busy
                 || app.new_world_creating
                 || app.ms_logging_in
+                || app.migration_busy
             {
                 app.status = "请先停止当前任务，再修改根目录".to_string();
                 return Task::none();
@@ -1015,6 +1148,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.selected_version = None;
             app.saves.clear();
             app.pending_creations.clear();
+            app.migration = None;
             app.mods.clear();
             app.mods_version = None;
             app.profiles.clear();
@@ -1080,6 +1214,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::ResetAllDone(Ok(())) => {
             app.config = AppConfig::default();
+            app.onboarding = true;
+            app.onboarding_step = 0;
+            app.migration = None;
             app.eula_accepted = launcher::eula::is_accepted(&app.config);
             app.eula_sha1 = launcher::eula::accepted_sha1(&app.config);
             app.eula_checking = false;
@@ -1161,12 +1298,15 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 return Task::none();
             };
 
-            let version_id = launcher::fabric::version_id(&game.id, &loader.version);
             let opts = launcher::fabric::InstallOptions {
                 game_version: game.id.clone(),
                 loader_version: loader.version.clone(),
                 game_dir: launcher::config::resolve_game_dir(&app.config),
-                instance_dir: launcher::config::get_version_root(&app.config, &version_id),
+                instance_dir: launcher::runtime::paths_for_mode(
+                    &app.config,
+                    launcher::runtime::RuntimeMode::Normal,
+                )
+                .instance_dir,
                 concurrency: app.config.download_concurrency,
             };
             let events = core_event_sender();
@@ -1353,6 +1493,285 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::SaveDeleted(Err(e)) => {
             app.status = format!("删除存档失败: {}", e);
             Task::none()
+        }
+        Message::OnboardingNext => {
+            if app.selected_profile.is_none() {
+                app.status = "请先创建离线账户或登录微软账户".into();
+                return Task::none();
+            }
+            app.onboarding_step = 1;
+            Task::none()
+        }
+        Message::OnboardingFinish => {
+            if app.migration_busy {
+                return Task::none();
+            }
+            let mut config = app.config.clone();
+            config.onboarding_version = Some(1);
+            config.first_launch = false;
+            match launcher::config::save(&config) {
+                Ok(()) => {
+                    app.config = config;
+                    app.onboarding = false;
+                    app.page = Page::Maps;
+                    load_saves_task(app)
+                }
+                Err(e) => {
+                    app.status = format!("保存设置失败: {e}");
+                    Task::none()
+                }
+            }
+        }
+        Message::MigrationCancel => {
+            if let Some(cancel) = &app.migration_cancel {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                app.status = "正在取消扫描…".into();
+            }
+            Task::none()
+        }
+        Message::MigrationPickMods => Task::perform(
+            async {
+                rfd::AsyncFileDialog::new()
+                    .set_title("选择模组文件夹")
+                    .pick_folder()
+                    .await
+                    .map(|f| f.path().to_path_buf())
+            },
+            Message::MigrationModsPicked,
+        ),
+        Message::MigrationModsPicked(Some(path)) => update(app, Message::MigrationImportMods(path)),
+        Message::MigrationModsPicked(None) => Task::none(),
+        Message::MigrationPick => Task::perform(
+            async {
+                rfd::AsyncFileDialog::new()
+                    .set_title("选择 Minecraft 目录或要扫描的目录")
+                    .pick_folder()
+                    .await
+                    .map(|f| f.path().to_path_buf())
+            },
+            Message::MigrationPicked,
+        ),
+        Message::MigrationPicked(Some(path)) => {
+            if app.migration_busy {
+                return Task::none();
+            };
+            app.migration_busy = true;
+            app.migration = None;
+            app.status = format!("正在扫描 {}", path.display());
+            let destination = launcher::maps::root(&app.config);
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            app.migration_cancel = Some(cancel.clone());
+            Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        launcher::migration::scan_cancellable(&path, &[destination], Some(&cancel))
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
+                },
+                Message::MigrationScanned,
+            )
+        }
+        Message::MigrationPicked(None) => Task::none(),
+        Message::MigrationScanned(result) => {
+            app.migration_busy = false;
+            app.migration_cancel = None;
+            match result {
+                Ok(scan) => {
+                    app.status = format!(
+                        "发现 {} 个游戏目录、{} 个世界、{} 条提示",
+                        scan.directories.len(),
+                        scan.worlds.len(),
+                        scan.warnings.len()
+                    );
+                    app.migration = Some(scan)
+                }
+                Err(e) => app.status = format!("扫描失败: {e}"),
+            };
+            Task::none()
+        }
+        Message::MigrationImportAllWorlds => {
+            if app.migration_busy || app.game_running || app.launching {
+                app.status = "请等待当前任务或退出游戏".into();
+                return Task::none();
+            }
+            let Some(scan) = &app.migration else {
+                return Task::none();
+            };
+            let paths: Vec<_> = scan.worlds.iter().map(|w| w.path.clone()).collect();
+            let config = app.config.clone();
+            app.migration_busy = true;
+            app.status = "正在导入发现的世界…".into();
+            Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let mut imported = 0;
+                        let mut skipped = 0;
+                        let mut errors = Vec::new();
+                        for path in paths {
+                            match launcher::migration::import_world(&config, &path) {
+                                Ok(Some(_)) => imported += 1,
+                                Ok(None) => skipped += 1,
+                                Err(e) => errors.push(format!("{}: {e}", path.display())),
+                            }
+                        }
+                        Ok(format!(
+                            "已导入 {imported} 个世界，已存在 {skipped} 个，失败 {} 个：{}",
+                            errors.len(),
+                            errors.join("；")
+                        ))
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
+                },
+                Message::MigrationDone,
+            )
+        }
+        Message::MigrationImportWorld(path) => {
+            if app.migration_busy || app.game_running || app.launching {
+                app.status = "请等待当前任务或退出游戏".into();
+                return Task::none();
+            };
+            app.migration_busy = true;
+            let config = app.config.clone();
+            app.status = "正在复制世界…".into();
+            Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        launcher::migration::import_world(&config, &path).map(|id| {
+                            id.map(|id| format!("世界已导入: {id}"))
+                                .unwrap_or_else(|| "该来源已导入".into())
+                        })
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
+                },
+                Message::MigrationDone,
+            )
+        }
+        Message::MigrationInstallFabric(game, loader) => {
+            if app.fabric_installing || app.downloading || app.launching || app.game_running {
+                return Task::none();
+            }
+            if game != "26.3" {
+                app.status = "当前只支持从扫描结果安装 26.3 Fabric".into();
+                return Task::none();
+            }
+            let opts = launcher::fabric::InstallOptions {
+                game_version: game,
+                loader_version: loader,
+                game_dir: launcher::config::resolve_game_dir(&app.config),
+                instance_dir: launcher::runtime::paths_for_mode(
+                    &app.config,
+                    launcher::runtime::RuntimeMode::Normal,
+                )
+                .instance_dir,
+                concurrency: app.config.download_concurrency,
+            };
+            app.fabric_installing = true;
+            app.status = "正在安装来源实例的 Fabric 版本…".into();
+            Task::perform(
+                launcher::fabric::install(opts, core_event_sender()),
+                Message::FabricInstalled,
+            )
+        }
+        Message::MigrationImportConfig(path) => {
+            if app.config.enhanced_experience {
+                app.status = "请先关闭增强体验，在普通模式导入配置".into();
+                return Task::none();
+            }
+            if app.migration_busy || app.game_running || app.launching {
+                app.status = "请等待当前任务或退出游戏".into();
+                return Task::none();
+            }
+            let Some(version) = app.selected_version.as_ref().map(|v| v.id.clone()) else {
+                app.status = "请先选择已安装的 Fabric 版本".into();
+                return Task::none();
+            };
+            if !app
+                .local_versions
+                .iter()
+                .any(|v| v.id == version && v.kind == "fabric" && v.has_jar)
+            {
+                app.status = "请先选择已安装的 Fabric 版本".into();
+                return Task::none();
+            }
+            if let Err(e) = check_migration_instance(app, &path, &version) {
+                app.status = e;
+                return Task::none();
+            }
+            let target = launcher::runtime::paths_for_mode(
+                &app.config,
+                launcher::runtime::RuntimeMode::Normal,
+            )
+            .instance_dir
+            .join("config");
+            app.migration_busy = true;
+            Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        launcher::migration::import_config(&path, &target).map(|(n, skipped)| {
+                            format!(
+                                "已导入 {n} 个配置文件；跳过 {} 个：{}",
+                                skipped.len(),
+                                skipped.join("；")
+                            )
+                        })
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
+                },
+                Message::MigrationDone,
+            )
+        }
+        Message::MigrationImportMods(path) => {
+            if app.config.enhanced_experience {
+                app.status = "请先关闭增强体验，在普通模式导入模组".into();
+                return Task::none();
+            }
+            if app.migration_busy || app.game_running || app.launching {
+                app.status = "请等待当前任务或退出游戏".into();
+                return Task::none();
+            };
+            let Some(version) = app.selected_version.as_ref().map(|v| v.id.clone()) else {
+                app.status = "请先在启动页选择已安装的 Fabric 版本".into();
+                return Task::none();
+            };
+            if !app
+                .local_versions
+                .iter()
+                .any(|v| v.id == version && v.kind == "fabric" && v.has_jar)
+            {
+                app.status = "请先选择已安装的 Fabric 版本".into();
+                return Task::none();
+            }
+            if let Err(e) = check_migration_instance(app, &path, &version) {
+                app.status = e;
+                return Task::none();
+            }
+            let target = launcher::mods::mods_dir(&app.config, &version);
+            app.migration_busy = true;
+            Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        launcher::migration::import_mods(&path, &target).map(|(n, skipped)| {
+                            format!(
+                                "已导入 {n} 个模组；跳过 {} 个：{}",
+                                skipped.len(),
+                                skipped.join("；")
+                            )
+                        })
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
+                },
+                Message::MigrationDone,
+            )
+        }
+        Message::MigrationDone(result) => {
+            app.migration_busy = false;
+            app.status = result.unwrap_or_else(|e| format!("导入失败: {e}"));
+            load_saves_task(app)
         }
         Message::MapImportPathChanged(path) => {
             app.map_import_path = path;
@@ -2091,13 +2510,13 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     app.friends_loading = false;
                     app.friend_error = None;
                 }
-                let account_id = profile_id.clone();
-                Task::perform(
-                    async move { launcher::friends::save_snapshot_for(&account_id, &snapshot) },
-                    move |result| Message::FriendSnapshotSaved(profile_id, result),
-                )
+                Task::none()
             }
             CoreEvent::BridgeState { state, message } => {
+                if state == "friend_action_failed" {
+                    app.status = message.unwrap_or_else(|| "游戏内好友操作未能保存".into());
+                    return Task::none();
+                }
                 let phase = state
                     .strip_prefix("phase_")
                     .map(|phase| match phase {
@@ -2289,6 +2708,44 @@ fn load_saves_task(app: &mut App) -> Task<Message> {
         move |result| Message::PendingCreationsLoaded(pending_root.clone(), result),
     );
     Task::batch([worlds, pending])
+}
+
+fn check_migration_instance(
+    app: &App,
+    source: &std::path::Path,
+    version: &str,
+) -> Result<(), String> {
+    let Some(source_version) = app.migration.as_ref().and_then(|scan| {
+        scan.versions
+            .iter()
+            .find(|v| source.parent() == Some(v.run_dir.as_path()))
+    }) else {
+        return Ok(());
+    };
+    let Some(target) = app.local_versions.iter().find(|v| v.id == version) else {
+        return Err("未找到目标 Fabric 版本".into());
+    };
+    if source_version
+        .game_name
+        .as_deref()
+        .is_some_and(|name| name != target.game_version)
+    {
+        return Err(format!(
+            "来源 Minecraft {} 与目标 {} 不一致",
+            source_version.game_name.as_deref().unwrap_or("未知"),
+            target.game_version
+        ));
+    }
+    if let (Some(source_loader), Some(target_loader)) =
+        (&source_version.loader, &target.loader_version)
+    {
+        if source_loader != target_loader {
+            return Err(format!(
+                "来源 Fabric {source_loader} 与目标 {target_loader} 不一致，请先安装并选择来源版本"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn import_map_task(config: AppConfig, path: std::path::PathBuf) -> Task<Message> {
@@ -3211,6 +3668,103 @@ mod switch_perf {
         }
     }
 
+    #[cfg(feature = "screenshot")]
+    #[test]
+    fn onboarding_controls_produce_expected_messages() {
+        use iced::advanced::{clipboard, mouse};
+        use iced_runtime::user_interface::{Cache, UserInterface};
+        fn click(app: &App, x: f32, y: f32) -> Vec<Message> {
+            let mut renderer = iced::Renderer::new(iced::Font::default(), iced::Pixels(16.0));
+            let mut interface = UserInterface::build(
+                view(app),
+                Size::new(900.0, 560.0),
+                Cache::new(),
+                &mut renderer,
+            );
+            let mut clipboard = clipboard::Null;
+            let mut messages = Vec::new();
+            let events = [
+                iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            ];
+            let _ = interface.update(
+                &events,
+                mouse::Cursor::Available(iced::Point::new(x, y)),
+                &mut renderer,
+                &mut clipboard,
+                &mut messages,
+            );
+            messages
+        }
+        let mut app = screenshot_fixture();
+        app.onboarding = true;
+        app.onboarding_step = 0;
+        assert!(click(&app, 810.0, 130.0)
+            .iter()
+            .any(|m| matches!(m, Message::CreateProfile)));
+        assert!(click(&app, 65.0, 285.0)
+            .iter()
+            .any(|m| matches!(m, Message::OnboardingNext)));
+        app.onboarding_step = 1;
+        assert!(click(&app, 125.0, 175.0)
+            .iter()
+            .any(|m| matches!(m, Message::MigrationPick)));
+        assert!(click(&app, 80.0, 465.0)
+            .iter()
+            .any(|m| matches!(m, Message::OnboardingFinish)));
+        app.onboarding = false;
+        app.page = Page::Maps;
+        app.now += Duration::from_secs(1);
+        let now = app.now;
+        let _ = update(&mut app, Message::Tick(now));
+        assert!(click(&app, 790.0, 260.0)
+            .iter()
+            .any(|m| matches!(m, Message::SaveEnter(id) if id == "sample-world")));
+    }
+
+    #[cfg(feature = "screenshot")]
+    #[test]
+    #[ignore = "手动检查首次引导和迁移界面"]
+    fn render_onboarding_migration() {
+        let output = std::env::temp_dir().join("deepslate-onboarding-screenshots");
+        std::fs::create_dir_all(&output).unwrap();
+        let mut app = screenshot_fixture();
+        app.onboarding = true;
+        app.selected_profile = None;
+        render_screenshot_image(&app, &output.join("account.png"), 900, 560);
+        app.onboarding_step = 1;
+        app.migration = Some(launcher::migration::ScanResult {
+            directories: vec!["/home/player/Downloads/mc/.minecraft".into()],
+            versions: vec![launcher::migration::GameVersion {
+                id: "26.3-Fabric".into(),
+                game_name: Some("26.3".into()),
+                data_version: Some(5023),
+                protocol: Some(777),
+                loader: Some("0.20.1".into()),
+                root: "/tmp/test".into(),
+                run_dir: "/tmp/test/versions/26.3-Fabric".into(),
+            }],
+            worlds: (0..4)
+                .map(|i| launcher::migration::FoundWorld {
+                    path: format!("/home/player/Downloads/mc/.minecraft/saves/world-{i}").into(),
+                    name: format!("世界 {i}"),
+                    version: "26.3".into(),
+                    data_version: Some(5023),
+                    protocol: Some(777),
+                    associated_version: Some("26.3".into()),
+                })
+                .collect(),
+            warnings: vec![],
+        });
+        render_screenshot_image(&app, &output.join("migration.png"), 900, 560);
+        app.onboarding = false;
+        app.page = Page::Maps;
+        app.now += Duration::from_secs(1);
+        let now = app.now;
+        let _ = update(&mut app, Message::Tick(now));
+        render_screenshot_image(&app, &output.join("maps.png"), 900, 560);
+    }
+
     #[test]
     fn enhanced_launch_without_target_opens_world_library() {
         let mut app = make_app(1);
@@ -3406,7 +3960,7 @@ mod switch_perf {
     fn launch_and_settings_views_expose_scrollable_content() {
         assert!(views::page_requires_outer_scroll(Page::Launch));
         assert!(views::page_requires_outer_scroll(Page::Settings));
-        assert!(!views::page_requires_outer_scroll(Page::Maps));
+        assert!(views::page_requires_outer_scroll(Page::Maps));
     }
 
     #[test]
@@ -3507,6 +4061,7 @@ mod switch_perf {
             friends: launcher::friends::FriendSnapshot::default(),
             friends_loading: false,
             friend_error: None,
+            friend_code_input: String::new(),
             new_profile_name: String::new(),
             selected_java: java_list.first().cloned(),
             java_list,
@@ -3537,6 +4092,11 @@ mod switch_perf {
             saves: Vec::new(),
             pending_creations: Vec::new(),
             map_import_path: String::new(),
+            onboarding: false,
+            onboarding_step: 0,
+            migration: None,
+            migration_busy: false,
+            migration_cancel: None,
             pending_map_restore: None,
             active_map: None,
             renaming_save: None,
@@ -3586,6 +4146,151 @@ mod switch_perf {
         };
         app.refilter();
         app
+    }
+
+    #[test]
+    fn isolated_onboarding_flow_child() {
+        let Some(root) = std::env::var_os("DEEPSLATE_ONBOARDING_TEST_ROOT") else {
+            return;
+        };
+        let root = std::path::PathBuf::from(root);
+        let (boot, boot_tasks) = App::boot();
+        assert!(boot.onboarding);
+        drop(boot_tasks);
+        let mc = root.join("source/.minecraft/saves/world");
+        std::fs::create_dir_all(&mc).unwrap();
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../core/tests/fixtures/level_26_3.dat"),
+            mc.join("level.dat"),
+        )
+        .unwrap();
+        let mut app = make_app(1);
+        app.config.root_dir = root.join("launcher").to_string_lossy().into_owned();
+        app.config.onboarding_version = None;
+        app.onboarding = true;
+        app.onboarding_step = 0;
+        app.profiles.clear();
+        app.selected_profile = None;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        fn outputs(rt: &tokio::runtime::Runtime, task: Task<Message>) -> Vec<Message> {
+            use iced::futures::StreamExt;
+            rt.block_on(async move {
+                let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+                    return Vec::new();
+                };
+                let mut messages = Vec::new();
+                while let Some(action) = stream.next().await {
+                    if let iced_runtime::Action::Output(message) = action {
+                        messages.push(message)
+                    }
+                }
+                messages
+            })
+        }
+        app.new_profile_name = "MigrationTester".into();
+        let task = update(&mut app, Message::CreateProfile);
+        let mut messages = outputs(&rt, task);
+        assert_eq!(messages.len(), 1);
+        let _ = update(&mut app, messages.remove(0));
+        let selected = app.selected_profile.as_ref().unwrap();
+        assert_eq!(
+            selected.uuid,
+            launcher::profiles::uuid_from_name("MigrationTester")
+        );
+        assert_eq!(launcher::profiles::load().unwrap().profiles.len(), 1);
+        let (resumed, resume_tasks) = App::boot();
+        assert!(resumed.onboarding);
+        drop(resume_tasks);
+        let _ = update(&mut app, Message::OnboardingNext);
+        assert_eq!(app.onboarding_step, 1);
+        let task = update(
+            &mut app,
+            Message::MigrationPicked(Some(root.join("source"))),
+        );
+        for message in outputs(&rt, task) {
+            let _ = update(&mut app, message);
+        }
+        assert_eq!(app.migration.as_ref().unwrap().worlds.len(), 1);
+        let task = update(&mut app, Message::MigrationImportAllWorlds);
+        for message in outputs(&rt, task) {
+            let _ = update(&mut app, message);
+        }
+        let task = update(&mut app, Message::OnboardingFinish);
+        for message in outputs(&rt, task) {
+            let _ = update(&mut app, message);
+        }
+        assert!(!app.onboarding);
+        assert_eq!(app.page, Page::Maps);
+        assert_eq!(app.saves.len(), 1);
+        assert_eq!(
+            launcher::config::load().unwrap().onboarding_version,
+            Some(1)
+        );
+        assert!(root.join("launcher/game/saves").is_dir());
+        let (finished, finish_tasks) = App::boot();
+        assert!(!finished.onboarding);
+        drop(finish_tasks);
+        // Exercise the post-authentication path without contacting Microsoft or
+        // storing a real credential; OAuth callback validation is tested in core.
+        let online = launcher::profiles::upsert_online(launcher::auth::OnlineProfile {
+            username: "OnlineTester".into(),
+            uuid: "12345678-1234-4234-8234-123456789abc".into(),
+            access_token: "test-token".into(),
+            refresh_token: "test-refresh".into(),
+            expires_at: i64::MAX,
+        })
+        .unwrap();
+        app.onboarding = true;
+        app.onboarding_step = 0;
+        app.selected_profile = None;
+        let _ = update(&mut app, Message::MsLoginFinished(Ok(online)));
+        assert_eq!(
+            app.selected_profile.as_ref().unwrap().uuid,
+            "12345678-1234-4234-8234-123456789abc"
+        );
+        let _ = update(&mut app, Message::OnboardingNext);
+        assert_eq!(app.onboarding_step, 1);
+        assert_eq!(launcher::profiles::load().unwrap().profiles.len(), 2);
+    }
+
+    #[test]
+    fn isolated_onboarding_flow() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("deepslate-onboarding-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        let exe = root
+            .join("bin")
+            .join(if cfg!(windows) { "test.exe" } else { "test" });
+        std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+        let status = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "switch_perf::isolated_onboarding_flow_child",
+                "--nocapture",
+            ])
+            .env("DEEPSLATE_ONBOARDING_TEST_ROOT", &root)
+            .env("HOME", &root)
+            .env("USERPROFILE", &root)
+            .env("XDG_CONFIG_HOME", root.join("xdg"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn onboarding_requires_account_before_scan_step() {
+        let mut app = make_app(1);
+        app.onboarding = true;
+        app.onboarding_step = 0;
+        app.selected_profile = None;
+        let _ = update(&mut app, Message::OnboardingNext);
+        assert_eq!(app.onboarding_step, 0);
+        app.selected_profile = app.profiles.first().cloned();
+        let _ = update(&mut app, Message::OnboardingNext);
+        assert_eq!(app.onboarding_step, 1);
     }
 
     /// 连续 frames 帧：推进 16ms 时钟 + update(Tick) + view() 重建，返回 (平均, 最大)

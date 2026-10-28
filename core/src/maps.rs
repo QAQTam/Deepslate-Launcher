@@ -745,6 +745,40 @@ pub fn import_dir_with_source(
     migrated_from: Option<String>,
 ) -> Result<MapSummary, String> {
     let _guard = lock_library(config)?;
+    import_dir_locked(config, path, source, migrated_from)
+}
+
+/// Import a discovered source at most once, checking and writing while holding
+/// the same library lock. A busy library returns an error that can be retried.
+pub fn import_dir_once(
+    config: &AppConfig,
+    path: &Path,
+    source: String,
+) -> Result<Option<MapSummary>, String> {
+    let _guard = lock_library(config)?;
+    let library = ensure_root(config)?;
+    let entries = fs::read_dir(&library).map_err(|e| format!("读取地图库失败: {e}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("读取地图库条目失败: {e}"))?;
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') || !entry.path().join("level.dat").is_file() {
+            continue;
+        }
+        if load_manifest(&entry.path())
+            .is_ok_and(|manifest| manifest.migrated_from.as_deref() == Some(source.as_str()))
+        {
+            return Ok(None);
+        }
+    }
+    import_dir_locked(config, path, MapSource::Imported, Some(source)).map(Some)
+}
+
+fn import_dir_locked(
+    config: &AppConfig,
+    path: &Path,
+    source: MapSource,
+    migrated_from: Option<String>,
+) -> Result<MapSummary, String> {
     ensure_root(config)?;
     let stage = staging_dir(config)?;
     let result = (|| {
