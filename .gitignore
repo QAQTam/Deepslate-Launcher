@@ -1,6 +1,5 @@
 # Rust
-/target/
-/gui-iced/target/
+target/
 
 # Logs
 *.log
@@ -22,6 +21,7 @@ ehthumbs.db
 # Temporary files
 *.tmp
 *.temp
+/4689596882874350247@3@0.jar
 .deepx/
 .codegraph/
 

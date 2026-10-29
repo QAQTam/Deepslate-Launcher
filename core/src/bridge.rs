@@ -311,8 +311,22 @@ pub async fn run_world_session_with_commands(
     let _ = events.send(emit("waiting_for_bridge")).await;
     let mut connection = listener.accept(Duration::from_secs(90)).await?;
     let _ = events.send(emit("connected")).await;
+    // Friend data must never block the game session. A corrupt/unreadable
+    // store still launches with an empty mirror; the launcher reports the
+    // problem separately.
     let initial_snapshot = match owner_profile_id.as_deref() {
-        Some(profile_id) => crate::friends::load_for(profile_id)?,
+        Some(profile_id) => match crate::friends::load_for(profile_id) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let _ = events
+                    .send(crate::events::CoreEvent::BridgeState {
+                        state: "friend_snapshot_failed".into(),
+                        message: Some(error),
+                    })
+                    .await;
+                crate::friends::FriendSnapshot::default()
+            }
+        },
         None => crate::friends::FriendSnapshot::default(),
     };
     connection
@@ -374,6 +388,30 @@ pub async fn run_world_session_with_commands(
                             })
                             .await;
                     }
+                }
+            }
+            "SelfPresence" => {
+                // 26.3's PresenceHandler posts the local status through the
+                // native FriendsService. Bridge forwards it so the launcher's
+                // decentralized network can advertise the real activity.
+                let Some(profile_id) = owner_profile_id.as_ref() else {
+                    continue;
+                };
+                let Some(presence) = event
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .and_then(crate::friends::presence_from_authlib)
+                else {
+                    continue;
+                };
+                if let Err(error) = crate::friendnet::set_self_presence(profile_id, presence).await
+                {
+                    let _ = events
+                        .send(crate::events::CoreEvent::BridgeState {
+                            state: "friend_presence_failed".into(),
+                            message: Some(error),
+                        })
+                        .await;
                 }
             }
             "Status" => {

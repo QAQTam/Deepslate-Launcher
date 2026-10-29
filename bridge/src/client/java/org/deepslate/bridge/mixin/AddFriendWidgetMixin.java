@@ -18,7 +18,8 @@ abstract class AddFriendWidgetMixin {
 
     @Inject(method = "<init>", at = @At("RETURN"))
     private void deepslate$allowFullLauncherFriendCode(int width, Runnable refresh, CallbackInfo ci) {
-        editBox.setMaxLength(64);
+        // DL2 = 64 hex identity + base64url endpoint (~24-60 chars).
+        editBox.setMaxLength(512);
     }
 
     @Redirect(

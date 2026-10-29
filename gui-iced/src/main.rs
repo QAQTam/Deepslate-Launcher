@@ -31,12 +31,12 @@ mod log_window;
 // ── 事件总线：core (mpsc 单消费者) → iced 订阅 (broadcast 可重订阅) ────────
 
 static EVENT_BUS: LazyLock<broadcast::Sender<CoreEvent>> =
-    LazyLock::new(|| broadcast::channel(256).0);
+    LazyLock::new(|| broadcast::channel(1024).0);
 
 /// 取一个发给 core 的进度事件 sender；首次调用时启动转发线程
 fn core_event_sender() -> mpsc::Sender<CoreEvent> {
     static SENDER: LazyLock<mpsc::Sender<CoreEvent>> = LazyLock::new(|| {
-        let (tx, mut rx) = mpsc::channel(64);
+        let (tx, mut rx) = mpsc::channel(1024);
         std::thread::Builder::new()
             .name("core-events".into())
             .spawn(move || {
@@ -113,6 +113,8 @@ struct App {
     friends_loading: bool,
     friend_error: Option<String>,
     friend_code_input: String,
+    friend_port_input: String,
+    friend_advertise_input: String,
     new_profile_name: String,
     java_list: Vec<launcher::launch::JavaInfo>,
     selected_java: Option<launcher::launch::JavaInfo>,
@@ -247,6 +249,12 @@ impl App {
         let game_dir = launcher::config::resolve_game_dir(&config);
         let server_address = config.recent_servers.first().cloned().unwrap_or_default();
         let server_port_input = config.server_port.to_string();
+        let friend_port_input = if config.friend_port == 0 {
+            AppConfig::default().friend_port.to_string()
+        } else {
+            config.friend_port.to_string()
+        };
+        let friend_advertise_input = config.friend_advertise.clone();
         let window_width_input = config.window_width.to_string();
         let window_height_input = config.window_height.to_string();
         let now = Instant::now();
@@ -276,6 +284,8 @@ impl App {
             friends_loading: false,
             friend_error: None,
             friend_code_input: String::new(),
+            friend_port_input,
+            friend_advertise_input,
             new_profile_name: String::new(),
             java_list: Vec::new(),
             selected_java: None,
@@ -428,6 +438,8 @@ enum Message {
     ProfilesLoaded(Result<ProfileStore, String>),
     FriendsLoaded(String, Result<launcher::friends::FriendSnapshot, String>),
     FriendCodeChanged(String),
+    FriendPortChanged(String),
+    FriendAdvertiseChanged(String),
     CopyFriendCode,
     SubmitFriendAction(launcher::friends::FriendAction),
     FriendActionSaved(
@@ -435,7 +447,11 @@ enum Message {
         launcher::friends::FriendAction,
         Result<launcher::friends::FriendSnapshot, String>,
     ),
+    FriendNetworkSynced(String, Result<(), String>),
+    FriendServiceStopped,
+    FriendPresenceReset(Result<(), String>),
     FriendSyncFinished(String, Result<bool, String>),
+    FriendBackgroundSyncFinished(Result<bool, String>),
     JavaLoaded(Vec<launcher::launch::JavaInfo>),
     TabChanged(VersionTab),
     VersionSelected(launcher::download::VersionInfo),
@@ -500,6 +516,7 @@ enum Message {
     MigrationImportMods(std::path::PathBuf),
     MigrationImportConfig(std::path::PathBuf),
     MigrationInstallFabric(String, String),
+    MigrationSelectFabric(String),
     MigrationDone(Result<String, String>),
     OnboardingNext,
     OnboardingFinish,
@@ -708,6 +725,17 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 .cloned()
                 .collect();
             app.refilter();
+            if app.version_tab == VersionTab::Release {
+                if let Some(choice) = app
+                    .config
+                    .last_version
+                    .as_ref()
+                    .and_then(|id| app.releases.iter().find(|v| &v.id == id))
+                    .cloned()
+                {
+                    app.selected_version = Some(choice);
+                }
+            }
             // Fabric 卡片默认选最新正式版，并拉取该版本可用的加载器
             if app.fabric_game.is_none() {
                 app.fabric_game = app.releases.first().cloned();
@@ -735,12 +763,21 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::LocalVersionsLoaded(_, local) => {
             app.local_versions = local;
             app.local_choices = local_choices(&app.local_versions);
-            app.refilter();
-            // 安装完成后自动选中新版本
-            if let Some(id) = app.pending_select.take() {
+            // Restore the selected installed version after restart; installation takes priority.
+            if let Some(id) = app
+                .pending_select
+                .take()
+                .or_else(|| app.config.last_version.clone())
+            {
                 if let Some(choice) = app.local_choices.iter().find(|v| v.id == id).cloned() {
+                    app.version_tab = VersionTab::Installed;
+                    app.refilter();
                     app.selected_version = Some(choice);
+                } else {
+                    app.refilter();
                 }
+            } else {
+                app.refilter();
             }
             Task::none()
         }
@@ -760,7 +797,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 .cloned()
                 .or_else(|| app.profiles.first().cloned());
             app.friends = launcher::friends::FriendSnapshot::default();
-            load_friends_task(app)
+            Task::batch([load_friends_task(app), sync_friend_service_task(app)])
         }
         Message::ProfilesLoaded(Err(e)) => {
             app.status = format!("加载档案失败: {}", e);
@@ -788,14 +825,15 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::VersionSelected(v) => {
             app.pending_world_enter = None;
+            app.config.last_version = Some(v.id.clone());
             app.selected_version = Some(v);
-            Task::none()
+            persist_config_task(app)
         }
         Message::ProfileSelected(p) => {
             app.selected_profile = Some(p);
             app.friends = launcher::friends::FriendSnapshot::default();
             app.friend_code_input.clear();
-            load_friends_task(app)
+            Task::batch([load_friends_task(app), sync_friend_service_task(app)])
         }
         Message::JavaSelected(j) => {
             app.selected_java = Some(j);
@@ -826,7 +864,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.selected_profile = Some(profile);
             app.friends = launcher::friends::FriendSnapshot::default();
             app.friend_code_input.clear();
-            load_friends_task(app)
+            Task::batch([load_friends_task(app), sync_friend_service_task(app)])
         }
         Message::ProfileCreated(Err(e)) => {
             app.status = format!("创建档案失败: {}", e);
@@ -863,6 +901,14 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.friend_code_input = code;
             Task::none()
         }
+        Message::FriendPortChanged(port) => {
+            app.friend_port_input = port;
+            Task::none()
+        }
+        Message::FriendAdvertiseChanged(address) => {
+            app.friend_advertise_input = address;
+            Task::none()
+        }
         Message::CopyFriendCode => {
             if app.friends.invite_code.is_empty() {
                 app.status = "好友码尚未生成".into();
@@ -894,19 +940,32 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     app.friends = snapshot.clone();
                     app.friend_error = None;
                 }
+                let network_running = snapshot.network.running;
                 app.friend_code_input.clear();
                 app.status = match action {
                     launcher::friends::FriendAction::AddRequest { .. } => {
-                        "已将好友申请保存到启动器；对方尚未收到（等待联网接入）".into()
+                        if network_running {
+                            "好友申请已加入发送队列，正在连接对方".into()
+                        } else {
+                            "好友申请已保存；启用好友网络后会尝试送达".into()
+                        }
                     }
-                    _ => "好友数据已保存到启动器".into(),
+                    launcher::friends::FriendAction::Settings { enabled: true, .. } => {
+                        "好友网络已启用，正在建立监听".into()
+                    }
+                    launcher::friends::FriendAction::Settings { enabled: false, .. } => {
+                        "好友网络已停止".into()
+                    }
+                    _ => "好友数据已更新，正在同步".into(),
                 };
             }
+            let service = sync_friend_service_task(app);
             let sync_profile = account_id.clone();
-            Task::perform(
+            let game = Task::perform(
                 async move { launcher::launch::sync_managed_friends(&sync_profile, snapshot).await },
                 move |result| Message::FriendSyncFinished(account_id, result),
-            )
+            );
+            Task::batch([service, game])
         }
         Message::FriendActionSaved(account_id, _, Err(error)) => {
             if app
@@ -946,6 +1005,31 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             {
                 app.status = format!("好友已保存在启动器，但同步到游戏失败: {error}");
             }
+            Task::none()
+        }
+        Message::FriendNetworkSynced(account_id, Ok(())) => {
+            let _ = account_id;
+            Task::none()
+        }
+        Message::FriendNetworkSynced(account_id, Err(error)) => {
+            if app
+                .selected_profile
+                .as_ref()
+                .is_some_and(|profile| profile.uuid == account_id)
+            {
+                app.status = format!("好友网络未启动: {error}");
+            }
+            Task::none()
+        }
+        Message::FriendServiceStopped => Task::none(),
+        Message::FriendPresenceReset(Ok(())) => Task::none(),
+        Message::FriendPresenceReset(Err(error)) => {
+            app.status = format!("恢复在线状态失败: {error}");
+            Task::none()
+        }
+        Message::FriendBackgroundSyncFinished(Ok(_)) => Task::none(),
+        Message::FriendBackgroundSyncFinished(Err(error)) => {
+            app.status = format!("后台同步好友到游戏失败: {error}");
             Task::none()
         }
         Message::RescanJava => {
@@ -1166,7 +1250,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.eula_warning = None;
             app.eula_error = None;
             app.status = "根目录已变更；请保存设置并重新启动以重新加载档案".to_string();
-            Task::none()
+            stop_friend_service_task()
         }
         Message::ConcurrencySelected(n) => {
             app.config.download_concurrency = n;
@@ -1174,6 +1258,16 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::SaveSettings => {
             let mut config = app.config.clone();
+            let friend_port = match app.friend_port_input.trim().parse::<u16>() {
+                Ok(port) if port > 0 => port,
+                _ => {
+                    app.status = "好友网络端口必须是 1–65535 之间的整数".into();
+                    return Task::none();
+                }
+            };
+            config.friend_port = friend_port;
+            config.friend_advertise = app.friend_advertise_input.trim().to_string();
+            app.friend_port_input = friend_port.to_string();
             if let Some(java) = &app.selected_java {
                 config.java_path = Some(java.path.clone());
             }
@@ -1193,13 +1287,21 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 "设置已保存"
             }
             .to_string();
-            Task::none()
+            if app.root_changed {
+                Task::none()
+            } else {
+                sync_friend_service_task(app)
+            }
         }
         Message::SettingsSaved(Err(e)) => {
             app.status = format!("保存设置失败: {}", e);
             Task::none()
         }
         Message::ResetAllPressed => {
+            if app.migration_busy {
+                app.status = "请先等待迁移完成或取消扫描，再重置配置".into();
+                return Task::none();
+            }
             if app.confirm_reset {
                 app.confirm_reset = false;
                 Task::perform(
@@ -1214,6 +1316,8 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::ResetAllDone(Ok(())) => {
             app.config = AppConfig::default();
+            app.friend_port_input = app.config.friend_port.to_string();
+            app.friend_advertise_input = app.config.friend_advertise.clone();
             app.onboarding = true;
             app.onboarding_step = 0;
             app.migration = None;
@@ -1230,10 +1334,13 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.friends_loading = false;
             app.friend_error = None;
             app.status = "所有配置已重置".to_string();
-            Task::perform(
-                async { launcher::profiles::load() },
-                Message::ProfilesLoaded,
-            )
+            Task::batch([
+                stop_friend_service_task(),
+                Task::perform(
+                    async { launcher::profiles::load() },
+                    Message::ProfilesLoaded,
+                ),
+            ])
         }
         Message::ResetAllDone(Err(e)) => {
             app.status = format!("重置失败: {}", e);
@@ -1325,12 +1432,16 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::FabricInstalled(Ok(result)) => {
             app.fabric_installing = false;
             app.pending_select = Some(result.version_id.clone());
+            app.config.last_version = Some(result.version_id.clone());
             app.version_tab = VersionTab::Installed;
             app.status = format!(
                 "Fabric {} / Minecraft {} 安装完成（{} 个库）",
                 result.loader_version, result.game_version, result.libraries_total
             );
-            load_local_versions(launcher::config::resolve_game_dir(&app.config))
+            Task::batch([
+                load_local_versions(launcher::config::resolve_game_dir(&app.config)),
+                persist_config_task(app),
+            ])
         }
         Message::FabricInstalled(Err(e)) => {
             app.fabric_installing = false;
@@ -1648,6 +1759,19 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 },
                 Message::MigrationDone,
             )
+        }
+        Message::MigrationSelectFabric(id) => {
+            if let Some(choice) = app.local_choices.iter().find(|v| v.id == id).cloned() {
+                app.version_tab = VersionTab::Installed;
+                app.refilter();
+                app.selected_version = Some(choice);
+                app.config.last_version = Some(id.clone());
+                app.status = format!("已选择已安装版本：{id}");
+                return persist_config_task(app);
+            } else {
+                app.status = "该版本尚未安装，请先安装".into();
+            }
+            Task::none()
         }
         Message::MigrationInstallFabric(game, loader) => {
             if app.fabric_installing || app.downloading || app.launching || app.game_running {
@@ -2471,6 +2595,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 Task::none()
             }
             CoreEvent::GameState(state) => {
+                let stopped = matches!(state, GameState::Stopped { .. });
                 match state {
                     GameState::Launching { .. } => {
                         app.launching = true;
@@ -2494,27 +2619,56 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                         // Its completion message is the only safe point to refresh the map.
                     }
                 }
+                if stopped {
+                    if let Some(profile) = app.selected_profile.as_ref() {
+                        let account = profile.uuid.clone();
+                        return Task::perform(
+                            async move {
+                                launcher::friendnet::set_self_presence(&account, "online").await
+                            },
+                            Message::FriendPresenceReset,
+                        );
+                    }
+                }
                 Task::none()
             }
             CoreEvent::FriendsSnapshot {
                 profile_id,
                 snapshot,
             } => {
+                let mut changed = false;
                 if app
                     .selected_profile
                     .as_ref()
                     .is_some_and(|profile| profile.uuid == profile_id)
                     && snapshot.updated_at >= app.friends.updated_at
                 {
+                    changed = app.friends != snapshot;
                     app.friends = snapshot.clone();
                     app.friends_loading = false;
                     app.friend_error = None;
                 }
-                Task::none()
+                if changed && app.game_running {
+                    background_sync_managed_friends(profile_id, snapshot)
+                } else {
+                    Task::none()
+                }
             }
             CoreEvent::BridgeState { state, message } => {
                 if state == "friend_action_failed" {
                     app.status = message.unwrap_or_else(|| "游戏内好友操作未能保存".into());
+                    return Task::none();
+                }
+                if state == "friend_presence_failed" {
+                    app.status =
+                        message.unwrap_or_else(|| "游戏内在线状态未能同步到好友网络".into());
+                    return Task::none();
+                }
+                if state == "friend_snapshot_failed" {
+                    app.status = format!(
+                        "好友数据读取失败，游戏已使用空好友列表启动: {}",
+                        message.unwrap_or_else(|| "未知错误".into())
+                    );
                     return Task::none();
                 }
                 let phase = state
@@ -2687,6 +2841,37 @@ fn load_friends_task(app: &mut App) -> Task<Message> {
     Task::perform(
         async move { launcher::friends::load_for(&task_account_id) },
         move |result| Message::FriendsLoaded(account_id, result),
+    )
+}
+
+/// Reconcile the decentralized friend listener with the selected account and
+/// persisted settings. The service reports snapshots through CoreEvent.
+fn sync_friend_service_task(app: &App) -> Task<Message> {
+    let Some(profile) = app.selected_profile.as_ref() else {
+        return Task::none();
+    };
+    let account_id = profile.uuid.clone();
+    let config = app.config.clone();
+    let task_account = account_id.clone();
+    Task::perform(
+        async move { launcher::friendnet::sync_service(&task_account, &config).await },
+        move |result| Message::FriendNetworkSynced(account_id, result),
+    )
+}
+
+fn stop_friend_service_task() -> Task<Message> {
+    Task::perform(async { launcher::friendnet::stop_service().await }, |_| {
+        Message::FriendServiceStopped
+    })
+}
+
+fn background_sync_managed_friends(
+    profile_id: String,
+    snapshot: launcher::friends::FriendSnapshot,
+) -> Task<Message> {
+    Task::perform(
+        async move { launcher::launch::sync_managed_friends(&profile_id, snapshot).await },
+        Message::FriendBackgroundSyncFinished,
     )
 }
 
@@ -3512,6 +3697,10 @@ fn main() -> iced::Result {
         std::process::exit(run_cli_save_op(&args));
     }
 
+    // The friend network runs outside the iced task graph; route its snapshots
+    // through the same broadcast bus as download/auth/game events.
+    launcher::friendnet::install_event_sink(core_event_sender());
+
     iced::application(App::boot, update, view)
         .title(|_app: &App| "深板岩启动器".to_string())
         .theme(|app: &App| {
@@ -4062,6 +4251,8 @@ mod switch_perf {
             friends_loading: false,
             friend_error: None,
             friend_code_input: String::new(),
+            friend_port_input: AppConfig::default().friend_port.to_string(),
+            friend_advertise_input: String::new(),
             new_profile_name: String::new(),
             selected_java: java_list.first().cloned(),
             java_list,
@@ -4278,6 +4469,29 @@ mod switch_perf {
             .unwrap();
         assert!(status.success());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restores_migrated_fabric_version_after_restart() {
+        let mut app = make_app(2);
+        app.config.last_version = Some("fabric-loader-0.20.1-26.3".into());
+        let dir = launcher::config::resolve_game_dir(&app.config);
+        let local = launcher::versions::LocalVersion {
+            id: "fabric-loader-0.20.1-26.3".into(),
+            kind: "fabric".into(),
+            game_version: "26.3".into(),
+            loader_version: Some("0.20.1".into()),
+            display_name: "26.3 Fabric".into(),
+            main_class: "net.fabricmc.loader.impl.launch.knot.KnotClient".into(),
+            has_jar: true,
+            installed_at: 0,
+        };
+        let _ = update(&mut app, Message::LocalVersionsLoaded(dir, vec![local]));
+        assert_eq!(app.version_tab, VersionTab::Installed);
+        assert_eq!(
+            app.selected_version.as_ref().unwrap().id,
+            "fabric-loader-0.20.1-26.3"
+        );
     }
 
     #[test]

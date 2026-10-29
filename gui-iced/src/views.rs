@@ -217,6 +217,14 @@ fn migration_section(app: &App) -> Element<'_, Message> {
                 let mods = version.run_dir.join("mods");
                 let mut line = row![].spacing(8);
                 if version.game_name.as_deref() == Some("26.3") {
+                    let id = launcher::fabric::version_id("26.3", loader);
+                    if app.local_choices.iter().any(|v| v.id == id) {
+                        line = line.push(
+                            button("选择已安装版本")
+                                .on_press(Message::MigrationSelectFabric(id))
+                                .style(style::secondary),
+                        );
+                    }
                     line = line.push(
                         button("安装此 Fabric 版本")
                             .on_press(Message::MigrationInstallFabric(
@@ -288,7 +296,7 @@ fn migration_section(app: &App) -> Element<'_, Message> {
                 );
             }
         }
-        content=content.push(text("导入模组前请先安装并选择对应的 Fabric 版本；模组依赖和配置需检查。多个来源的模组会进入同一普通游戏目录。").size(12).color(s.text_muted));
+        content=content.push(text(format!("当前选择：{}。导入模组前请先安装并选择对应的 Fabric 版本；模组依赖和配置需检查。多个来源的模组会进入同一普通游戏目录。", app.selected_version.as_ref().map(|v|v.id.as_str()).unwrap_or("未选择"))).size(12).color(s.text_muted));
         for warning in scan.warnings.iter().take(5) {
             content = content.push(
                 text(format!("扫描提示：{warning}"))
@@ -1988,24 +1996,57 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
     let s = style::scheme_of(app.dark_mode);
     let friends_enabled = app.friends.enabled;
     let allow_friend_requests = app.friends.allow_requests;
+    let network = &app.friends.network;
+    let network_line = if network.running {
+        format!(
+            "好友网络监听 :{} · 已连接 {} 个节点 · 对外地址 {}",
+            network.port,
+            network.online,
+            if network.endpoint.is_empty() {
+                "未知"
+            } else {
+                network.endpoint.as_str()
+            }
+        )
+    } else if let Some(error) = network.error.as_deref() {
+        format!("好友网络未运行: {error}")
+    } else {
+        "好友网络未启用：勾选下方开关后开始监听并同步在线状态".to_string()
+    };
+    // The full DL2 code is too long for a narrow card; show a recognizable
+    // head/tail while "复制好友码" always copies the complete value.
+    let code_display = if app.friends.invite_code.is_empty() {
+        "加载账户后生成好友码".to_string()
+    } else if app.friends.invite_code.chars().count() > 80 {
+        let chars: Vec<char> = app.friends.invite_code.chars().collect();
+        format!(
+            "{}…{}",
+            chars[..44].iter().collect::<String>(),
+            chars[chars.len() - 20..].iter().collect::<String>()
+        )
+    } else {
+        app.friends.invite_code.clone()
+    };
     let code_card = section_card(
         s,
         "我的好友码",
         row![
             column![
-                text(if app.friends.invite_code.is_empty() {
-                    "加载账户后生成好友码"
-                } else {
-                    app.friends.invite_code.as_str()
-                })
-                .size(16)
-                .color(s.text_primary),
-                text("好友码属于当前账户；联网发现接入前，对方输入后只会在本机保存待处理申请。")
+                text(code_display)
                     .size(12)
-                    .color(s.text_muted),
+                    .color(s.text_primary)
+                    .width(Length::Fill),
+                text(network_line).size(12).color(if network.running {
+                    s.text_muted
+                } else {
+                    s.text_faint
+                }),
+                text("显示时省略中间部分，复制得到完整码。DL2 好友码包含本账户的签名公钥和当前地址，只发给信任的人；无法直连时可经共同好友中继申请。")
+                    .size(11)
+                    .color(s.text_faint),
             ]
-            .spacing(5),
-            Space::new().width(Length::Fill),
+            .spacing(5)
+            .width(Length::Fill),
             button(text("复制好友码").size(12))
                 .on_press(Message::CopyFriendCode)
                 .style(style::secondary),
@@ -2019,7 +2060,7 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
         s,
         "添加好友",
         row![
-            text_input("输入对方的 DL1 好友码", &app.friend_code_input)
+            text_input("输入对方的 DL2 好友码", &app.friend_code_input)
                 .on_input(Message::FriendCodeChanged)
                 .on_submit(Message::SubmitFriendAction(
                     launcher::friends::FriendAction::AddRequest {
@@ -2044,7 +2085,7 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
         "好友列表设置",
         column![
             checkbox(friends_enabled)
-                .label("在 Minecraft 原生好友列表中启用好友")
+                .label("启用去中心化好友网络（监听端口并同步在线状态）")
                 .on_toggle(move |enabled| Message::SubmitFriendAction(
                     launcher::friends::FriendAction::Settings {
                         enabled,
@@ -2052,13 +2093,16 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
                     },
                 )),
             checkbox(allow_friend_requests)
-                .label("允许好友申请")
+                .label("允许好友申请（仍需你接受才会成为好友）")
                 .on_toggle(move |allow_requests| Message::SubmitFriendAction(
                     launcher::friends::FriendAction::Settings {
                         enabled: friends_enabled,
                         allow_requests,
                     },
                 )),
+            text("端口与对外地址在「设置 → 好友网络」修改；公网直连需要路由器端口转发。")
+                .size(11)
+                .color(s.text_faint),
         ]
         .spacing(8)
         .into(),
@@ -2080,23 +2124,30 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
             .color(s.text_muted)
             .into()
     } else if app.friends.friends.is_empty() {
-        text("暂无好友。添加好友码后，好友关系将保存在启动器账户中。")
+        text("暂无好友。复制你的 DL2 好友码给对方，或输入对方的好友码发送申请。")
             .size(12)
             .color(s.text_muted)
             .into()
     } else {
         column(app.friends.friends.iter().map(|friend| {
             let id = friend.profile_id.clone();
+            let (presence_label, presence_color) = friend_presence(friend.presence.as_deref(), s);
+            let detail = match friend.endpoint.as_deref() {
+                Some(endpoint) => format!("{presence_label} · {endpoint}"),
+                None => format!(
+                    "{presence_label} · 身份 {}",
+                    friend
+                        .key
+                        .as_deref()
+                        .map(|key| key.chars().take(8).collect::<String>())
+                        .unwrap_or_else(|| "旧版本地好友".into())
+                ),
+            };
             container(
                 row![
                     column![
                         text(friend.name.clone()).size(13).color(s.text_primary),
-                        text(format!(
-                            "玩家 ID · {}",
-                            id.chars().take(8).collect::<String>()
-                        ))
-                        .size(12)
-                        .color(s.text_faint),
+                        text(detail).size(12).color(presence_color),
                     ]
                     .spacing(3),
                     Space::new().width(Length::Fill),
@@ -2140,7 +2191,7 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
             0.0,
             column![
                 text("好友").size(28).color(s.text_primary),
-                text("启动器管理账户好友数据，并通过 Bridge 同步给 Minecraft；游戏内原生好友界面的操作也会回传。跨设备联网尚未接入。")
+                text("启动器后端持有签名好友图：各账户通过 DL2 好友码直连，无法直连时由共同好友中继签名申请。Minecraft 26.3 原生好友界面由 Bridge 镜像，列表操作与在线状态双向同步。")
                     .size(12)
                     .color(s.text_muted),
                 rule::horizontal(1.0).style(style::rule_style),
@@ -2158,6 +2209,18 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
     .spacing(14)
     .width(Length::Fill)
     .into()
+}
+
+fn friend_presence(presence: Option<&str>, s: &style::Scheme) -> (&'static str, iced::Color) {
+    match presence {
+        Some("online") => ("在线", s.accent),
+        Some("playing_offline") => ("正在单人游戏", s.accent),
+        Some("playing_server") => ("正在服务器游戏", s.accent),
+        Some("playing_realms") => ("正在 Realm 游戏", s.accent),
+        Some("playing_hosted_server") => ("正在主持世界", s.accent),
+        Some("offline") => ("离线", s.text_faint),
+        _ => ("状态未知", s.text_faint),
+    }
 }
 
 fn friends_request_card<'a>(
@@ -2194,9 +2257,12 @@ fn friends_request_card<'a>(
                 row![
                     column![
                         text(friend.name.clone()).size(13).color(s.text_primary),
-                        text(format!("Minecraft 玩家 · {id_hint}"))
-                            .size(12)
-                            .color(s.text_faint),
+                        text(match friend.endpoint.as_deref() {
+                            Some(endpoint) => format!("Minecraft 玩家 · {id_hint} · {endpoint}"),
+                            None => format!("Minecraft 玩家 · {id_hint}"),
+                        })
+                        .size(12)
+                        .color(s.text_faint),
                     ]
                     .spacing(3),
                     Space::new().width(Length::Fill),
@@ -2724,6 +2790,32 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
     } else {
         Space::new().height(0).into()
     };
+    let friends_card = section_card(
+        s,
+        "好友网络",
+        column![
+            row![
+                text("监听端口").size(12).color(s.text_muted),
+                text_input("27731", &app.friend_port_input)
+                    .on_input(Message::FriendPortChanged)
+                    .width(Length::from(110))
+                    .style(style::text_field),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center),
+            text_input(
+                "对外地址，如 example.com:27731（留空自动使用局域网 IPv4）",
+                &app.friend_advertise_input
+            )
+            .on_input(Message::FriendAdvertiseChanged)
+            .style(style::text_field),
+            text("DL2 好友码会包含该地址；公网直连需要路由器端口转发。保存设置后好友网络会自动重启，在线好友会短暂重连。")
+                .size(11)
+                .color(s.text_faint),
+        ]
+        .spacing(9)
+        .into(),
+    );
     let maps_card = section_card(
         s,
         "地图库",
@@ -2769,9 +2861,13 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
     ]
     .spacing(16)
     .width(Length::Fill);
-    let grid_right = column![enter(t, 0.20, maps_card), enter(t, 0.30, dirs_card)]
-        .spacing(16)
-        .width(Length::Fill);
+    let grid_right = column![
+        enter(t, 0.10, friends_card),
+        enter(t, 0.20, maps_card),
+        enter(t, 0.30, dirs_card)
+    ]
+    .spacing(16)
+    .width(Length::Fill);
 
     column![
         text("设置").size(28).color(s.text_primary),

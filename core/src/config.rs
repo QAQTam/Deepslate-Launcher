@@ -38,6 +38,9 @@ pub struct AppConfig {
     pub version_isolation: bool, // true: 每个版本独立根目录; false: 统一 game/ 目录
     pub saves_isolation: bool,   // true: 每版本独立存档（实验级）；false: 统一存档
     pub last_profile: Option<String>,
+    /// Last selected game version, including locally installed loaders.
+    #[serde(default)]
+    pub last_version: Option<String>,
     pub java_path: Option<String>,
     pub download_concurrency: usize,
     pub first_launch: bool,
@@ -77,6 +80,12 @@ pub struct AppConfig {
     /// Java 25+ 的紧凑对象头选项。
     #[serde(default)]
     pub enhanced_compact_object_headers: bool,
+    /// 去中心化好友网络的监听端口（DL2 邀请码里公布）。
+    #[serde(default = "default_friend_port")]
+    pub friend_port: u16,
+    /// 好友网络对外公布地址（host:port）。留空时使用本机探测到的局域网地址。
+    #[serde(default)]
+    pub friend_advertise: String,
     /// 本地服务端端口
     #[serde(default = "default_server_port")]
     pub server_port: u16,
@@ -120,6 +129,10 @@ fn default_server_port() -> u16 {
     25565
 }
 
+fn default_friend_port() -> u16 {
+    27731
+}
+
 fn default_server_memory() -> u32 {
     2048
 }
@@ -154,6 +167,7 @@ impl Default for AppConfig {
             version_isolation: false,
             saves_isolation: false,
             last_profile: None,
+            last_version: None,
             java_path: None,
             download_concurrency: 32,
             first_launch: true,
@@ -170,6 +184,8 @@ impl Default for AppConfig {
             enhanced_gc: default_enhanced_gc(),
             enhanced_max_memory_mb: 0,
             enhanced_compact_object_headers: false,
+            friend_port: default_friend_port(),
+            friend_advertise: String::new(),
             server_port: default_server_port(),
             server_memory_mb: default_server_memory(),
             server_online_mode: true,
@@ -255,10 +271,28 @@ mod security_tests {
     }
 
     #[test]
+    fn old_configs_without_last_version_still_load() {
+        let mut value = serde_json::to_value(super::AppConfig::default()).unwrap();
+        value.as_object_mut().unwrap().remove("last_version");
+        let config: super::AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(config.last_version, None);
+    }
+
+    #[test]
     fn old_configs_default_enhanced_experience_to_disabled() {
         let mut value = serde_json::to_value(super::AppConfig::default()).unwrap();
         value.as_object_mut().unwrap().remove("enhanced_experience");
         let config: super::AppConfig = serde_json::from_value(value).unwrap();
         assert!(!config.enhanced_experience);
+    }
+
+    #[test]
+    fn old_configs_without_friend_network_fields_still_load() {
+        let mut value = serde_json::to_value(super::AppConfig::default()).unwrap();
+        value.as_object_mut().unwrap().remove("friend_port");
+        value.as_object_mut().unwrap().remove("friend_advertise");
+        let config: super::AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(config.friend_port, super::default_friend_port());
+        assert!(config.friend_advertise.is_empty());
     }
 }

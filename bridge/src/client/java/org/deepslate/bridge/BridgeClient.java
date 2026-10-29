@@ -56,7 +56,7 @@ public final class BridgeClient implements ClientModInitializer {
     private static final int MAX_LINE = 2 * 1024 * 1024;
     private static final Identifier RESOURCE_GATE_BEGIN = Identifier.fromNamespaceAndPath("deepslate-bridge", "resource_gate_begin");
     private static final Identifier RESOURCE_GATE_READY = Identifier.fromNamespaceAndPath("deepslate-bridge", "resource_gate_ready");
-    private static BridgeClient session;
+    private static volatile BridgeClient session;
     private static volatile boolean localizedResourcesReady;
     private static final Set<Screen> screensWithEvents =
             Collections.newSetFromMap(Collections.synchronizedMap(new WeakHashMap<>()));
@@ -504,5 +504,15 @@ public final class BridgeClient implements ClientModInitializer {
         }
         writer.println(line);
         return !writer.checkError();
+    }
+
+    /** Forward the native PresenceHandler's own status to the launcher. */
+    static boolean reportSelfPresence(String status) {
+        BridgeClient current = session;
+        if (current == null || status == null || status.isBlank() || status.length() > 32) return false;
+        if (!current.authenticated) return false;
+        JsonObject event = current.message("SelfPresence", "");
+        event.addProperty("status", status);
+        return current.send(event);
     }
 }

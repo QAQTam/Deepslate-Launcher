@@ -5,9 +5,9 @@ use sha1::{Digest, Sha1};
 use std::io::{Cursor, Read};
 
 pub const MINECRAFT: &str = "26.3";
-pub const BRIDGE_VERSION: &str = "0.4.0";
+pub const BRIDGE_VERSION: &str = "0.5.0";
 pub const PROTOCOL: u32 = 2;
-pub const BRIDGE_JAR: &[u8] = include_bytes!("../assets/deepslate-bridge-0.4.0.jar");
+pub const BRIDGE_JAR: &[u8] = include_bytes!("../assets/deepslate-bridge-0.5.0.jar");
 const API_ROOT: &str = "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
