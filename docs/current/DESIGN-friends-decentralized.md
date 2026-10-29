@@ -15,7 +15,7 @@
 明确不在首版范围：
 
 - 同账户多设备共享身份（复制 `<root>/config/friends/keys/` 可手动实现，但不做云同步）。
-- 完整 NAT 穿透（STUN/TURN/打洞）、DHT、自动公网发现。
+- 好友图直连的 NAT 穿透（STUN/TURN/打洞）、DHT、自动公网发现；世界 P2P 隧道是独立模块，见 `core/src/tunnel.rs`，不改变好友图的直连边界。
 - 用 Mojang 登录为“好友身份 = Minecraft 正版账号”提供密码学证明。
 - 离线消息长期存储、群组、聊天、屏蔽/举报。
 - 后台常驻守护进程：好友网络随启动器进程运行；启动器退出后不再监听，好友在 90 秒超时后看到离线。
@@ -39,6 +39,8 @@ flowchart LR
 | `core/src/friends.rs` | 身份、DL2 好友码、快照/外发队列/墓碑、关系状态机、动作入口 |
 | `core/src/friendnet.rs` | 安全握手、加密帧、监听/重连、连接去重、心跳、中继、在线状态 |
 | `core/src/bridge.rs` | 26.3 本机 IPC；转发游戏内好友动作与 `SelfPresence` |
+| `core/src/tunnel.rs` | 世界 P2P 隧道：Iroh QUIC、`DSR-` 票据、好友身份挑战认证、端口转发 |
+| `core/src/secure_fs.rs` | 跨平台私有文件/目录：Unix 0700/0600，Windows owner-only DACL |
 | `bridge/…/DeepslateFriendsService.java` | 游戏内 `FriendsService` 内存镜像；返回 presence、上报自身状态 |
 | `gui-iced` | 好友页、端口/对外地址设置、网络启停、事件回灌游戏 |
 
@@ -216,11 +218,11 @@ playing_hosted_server / offline
 | 重放旧申请/旧删除 | revision 高水位 + tombstones |
 | Ack 伪造 | 只有 outbox 目标公钥的 ack 生效 |
 | 显示名冒充正版玩家 | **未解决**：显示名/UUID 只是对端签名声明，未绑定 Mojang 账号；好友码才是信任锚 |
-| NAT/公网不可达 | 端口转发或共同好友中继；无打洞/STUN |
+| NAT/公网不可达 | 好友图用端口转发或共同好友中继；世界 P2P 隧道独立使用 Iroh 的 STUN/UPnP/Relay |
 | 同账户多设备 | 每套安装独立密钥；不支持自动同步 |
 | 中继可读申请/presence 元数据 | 已知并文档化；直连为端到端加密，中继只做单跳 |
 | 自定义密码学 | 使用 ring 的 Ed25519/X25519/HKDF/ChaCha20-Poly1305，但握手是本项目自定义组合，建议外部审计 |
-| Windows 文件 ACL | 尚未实现；Unix 上目录 0700、文件 0600 |
+| Windows 文件 ACL | **代码已实现**：Bridge 会话与好友密钥统一走 `secure_fs` 的 owner-only DACL；仍需 Windows + Minecraft 实机验收 |
 | 写入放大 | 每次可见状态变更/连接变更都会原子写快照并 fsync；好友很多时需后续批处理 |
 | 系统时钟严重偏差 | revision 以毫秒时间戳为下界；时钟大幅超前的一方会让过旧的申请被判定过期。建议保持系统时间同步 |
 
@@ -228,9 +230,9 @@ playing_hosted_server / offline
 
 已通过的自动化证据：
 
-- `cargo test -p deepslate-core --lib -- --test-threads=1`：137 passed / 6 ignored。
+- `cargo test -p deepslate-core --lib -- --test-threads=1`：144 passed / 6 ignored（Windows 实机，2026-10-29）。
 - `cargo test -p gui-iced --bin deepslate-iced`：28 passed。
-- `cargo check --workspace` 通过（仅既有 `auth.rs` 命名 warning）。
+- `cargo check --workspace --release` 通过（仅既有 `auth.rs` 命名 warning）。
 - 新增覆盖：
   - invite code/endpoint 校验；
   - 握手成功 + 错误期望身份拒绝；
@@ -238,7 +240,9 @@ playing_hosted_server / offline
   - 真实监听端口上，已认证节点完成「申请 → ack → 本地接受 → accept 外发 → presence → 删除」全链路；
   - 双账户「申请 → 接受 → presence → 删除 → 旧申请重放」状态机；
   - 错误目标公钥的申请被拒绝；
-  - 旧配置缺省好友字段仍可加载。
+  - 旧配置缺省好友字段仍可加载；
+  - P2P 隧道：公开票据、仅好友房间的 DL2 挑战、错误身份拒绝、票据 nonce/签名绑定；
+  - Windows：`secure_fs` owner-only DACL、Bridge 握手与受管会话。
 - Bridge：`./gradlew --offline build` 成功；内嵌 `core/assets/deepslate-bridge-0.5.0.jar` 与 `bridge/build/libs/` SHA-256 一致。
 
 尚未完成、需要实机证据：
@@ -247,13 +251,13 @@ playing_hosted_server / offline
 2. 26.3 原生好友 Overlay 在真实客户端中的列表、presence、申请确认和按钮结果。
 3. 游戏内输入 DL2 码（长文本、大小写、粘贴）与 512 字符输入框行为。
 4. 启动器崩溃/断网/重连、好友网络端口被占用、根目录切换后的行为。
-5. Windows/macOS 文件权限与路径；Windows 仍按既有交接暂缓。
+5. Windows/macOS 文件权限与路径：Windows IPC/ACL 代码与单测已完成，但 Java 25 + 26.3 + Bridge 实机仍未验收；macOS 未验收。
 
 后续优先级：
 
 1. 双机实机闭环与 26.3 Overlay 验收（最高）。
-2. NAT 穿透/可选公网 rendezvous（不改变“无中心好友数据”的边界）。
+2. 好友图的 NAT 穿透/可选公网 rendezvous（不改变“无中心好友数据”的边界）。
 3. 身份导出/导入，支持同账户多设备。
 4. 中继端到端加密（需要静态 X25519 密钥或等价方案）。
 5. 快照写批处理、presence 增量更新、连接级速率限制。
-6. Windows ACL 与跨平台打包验收。
+6. Windows 实机与跨平台打包验收。

@@ -2141,6 +2141,105 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
         .into(),
     );
 
+    let host_room_body: Element<'_, Message> = if let Some(ticket) = app.host_room_ticket.as_deref() {
+        let chars: Vec<char> = ticket.chars().collect();
+        let display = if chars.len() > 96 {
+            format!(
+                "{}…{}",
+                chars[..56].iter().collect::<String>(),
+                chars[chars.len() - 24..].iter().collect::<String>()
+            )
+        } else {
+            ticket.to_string()
+        };
+        let stop_button: Element<'_, Message> = if app.host_room_busy {
+            button(text("停止中...").size(11))
+                .style(style::secondary)
+                .into()
+        } else {
+            button(text("停止主持").size(11))
+                .on_press(Message::StopHostingRoom)
+                .style(style::danger)
+                .into()
+        };
+        column![
+            text("房间已发布。好友在线状态会显示「可加入」，也可以把票据直接发给对方。")
+                .size(12)
+                .color(s.text_muted),
+            text(display)
+                .size(11)
+                .color(s.text_primary)
+                .width(Length::Fill),
+            row![
+                button(text("复制票据").size(11))
+                    .on_press(Message::CopyRoomTicket)
+                    .style(style::secondary),
+                stop_button,
+            ]
+            .spacing(8),
+            text("房主需保持启动器运行；好友需要先通过 DL2 好友码添加。")
+                .size(11)
+                .color(s.text_faint),
+        ]
+        .spacing(8)
+        .into()
+    } else {
+        let publish: Element<'_, Message> = if app.host_room_busy {
+            button(text("发布中...").size(12))
+                .style(style::secondary)
+                .into()
+        } else {
+            button(text("发布房间").size(12))
+                .on_press(Message::PublishRoom)
+                .style(style::primary)
+                .into()
+        };
+        column![
+            text("把本机 Minecraft 端口通过 Iroh QUIC 暴露给好友。单人世界先在游戏内「对局域网开放」并填入游戏显示的端口；专用服务器通常为 25565。")
+                .size(12)
+                .color(s.text_muted),
+            row![
+                text_input("本机端口，例如 25565", &app.host_room_port_input)
+                    .on_input(Message::HostRoomPortChanged)
+                    .style(style::text_field)
+                    .width(Length::Fixed(180.0)),
+                publish,
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+            checkbox(app.host_room_public)
+                .label("允许持票者加入（不校验好友身份）")
+                .on_toggle(Message::HostRoomPublicToggled),
+            text("默认只允许已通过 DL2 好友码确认的好友加入。")
+                .size(11)
+                .color(s.text_faint),
+        ]
+        .spacing(8)
+        .into()
+    };
+    let host_room_card = section_card(s, "主持世界（P2P 隧道）", host_room_body);
+
+    let remote_room_card: Element<'_, Message> = if let Some(address) = app.remote_room_addr.as_deref() {
+        section_card(
+            s,
+            "P2P 连接",
+            row![
+                text(format!("已连接好友房间，本地代理 {address}"))
+                    .size(12)
+                    .color(s.text_muted),
+                Space::new().width(Length::Fill),
+                button(text("断开").size(11))
+                    .on_press(Message::LeaveFriendRoom)
+                    .style(style::danger),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .into(),
+        )
+    } else {
+        Space::new().height(0).into()
+    };
+
     let list_body: Element<'_, Message> = if app.friends_loading {
         text("正在读取启动器好友数据…")
             .size(12)
@@ -2249,9 +2348,11 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
         enter(t, 0.08, code_card),
         enter(t, 0.16, add_request),
         enter(t, 0.24, controls),
-        enter(t, 0.32, list_card),
-        enter(t, 0.40, incoming),
-        enter(t, 0.48, outgoing),
+        enter(t, 0.32, remote_room_card),
+        enter(t, 0.40, host_room_card),
+        enter(t, 0.48, list_card),
+        enter(t, 0.56, incoming),
+        enter(t, 0.64, outgoing),
     ]
     .spacing(14)
     .width(Length::Fill)

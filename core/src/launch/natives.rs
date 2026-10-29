@@ -161,10 +161,26 @@ fn write_native_file(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    let parent = path.parent().ok_or("native ZIP 路径为空")?;
+    let temp = parent.join(format!(".native-{}.tmp", uuid::Uuid::new_v4()));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(path)?;
-    std::io::copy(input, &mut file)?;
+        .open(&temp)?;
+    let copied = std::io::copy(input, &mut file).and_then(|_| file.sync_all());
+    drop(file);
+    if let Err(error) = copied {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error.into());
+    }
+    // Windows does not consistently replace an existing destination with
+    // rename; remove it first and retry, then clean up the temporary file.
+    if std::fs::rename(&temp, &path).is_err() {
+        let _ = std::fs::remove_file(&path);
+        if let Err(error) = std::fs::rename(&temp, &path) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error.into());
+        }
+    }
     Ok(())
 }

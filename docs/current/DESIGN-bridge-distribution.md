@@ -78,7 +78,7 @@ cargo build --release --workspace
 
 ## 尚需补齐
 
-- Windows 增强会话仍按现状暂停；嵌入 JAR 是跨平台的，但 Windows 凭据文件 ACL、启动/安装和实际游戏生命周期尚未验收。
+- Windows IPC 已实现：`core/src/secure_fs.rs` 为会话目录/文件、好友密钥和快照设置 owner-only DACL；Bridge 握手/受管会话单元测试已在 Windows 通过。嵌入 JAR 本身跨平台，但 Windows 启动/安装和实际游戏生命周期仍未实机验收。
 - macOS 尚无实机证据。
 - 没有自动 CI 发布流水线；当前通过 `package.sh` 和 Rust 测试手动保持源码/JAR/内嵌约束一致。
 - 当前增强实现固定 Minecraft 26.3；“26.3+”是最低版本声明，后续游戏版本须先更新并验证 Fabric API、Bridge 元数据和 Mixin 目标。

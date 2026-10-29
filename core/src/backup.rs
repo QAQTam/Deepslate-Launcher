@@ -367,28 +367,29 @@ mod tests {
             root_dir: "/r".to_string(),
             ..Default::default()
         };
+        let root = Path::new("/r");
         // 无任何隔离：实例目录 = root/game
         assert_eq!(
-            version_saves_dir(&config, "1.20").display().to_string(),
-            "/r/game/saves"
+            version_saves_dir(&config, "1.20"),
+            root.join("game").join("saves")
         );
         // 仅存档隔离：统一存储在 root/saves/{v}
         config.saves_isolation = true;
         assert_eq!(
-            version_saves_dir(&config, "1.20").display().to_string(),
-            "/r/saves/1.20"
+            version_saves_dir(&config, "1.20"),
+            root.join("saves").join("1.20")
         );
         // 版本隔离 + 存档隔离：存储仍在 root/saves/{v}
         config.version_isolation = true;
         assert_eq!(
-            version_saves_dir(&config, "1.20").display().to_string(),
-            "/r/saves/1.20"
+            version_saves_dir(&config, "1.20"),
+            root.join("saves").join("1.20")
         );
         // 仅版本隔离：实例目录下的真实 saves
         config.saves_isolation = false;
         assert_eq!(
-            version_saves_dir(&config, "1.20").display().to_string(),
-            "/r/versions/1.20/saves"
+            version_saves_dir(&config, "1.20"),
+            root.join("versions").join("1.20").join("saves")
         );
     }
 

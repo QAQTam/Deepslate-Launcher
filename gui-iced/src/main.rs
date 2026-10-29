@@ -115,6 +115,11 @@ struct App {
     friend_code_input: String,
     friend_port_input: String,
     friend_advertise_input: String,
+    host_room_port_input: String,
+    host_room_public: bool,
+    host_room_ticket: Option<String>,
+    host_room_busy: bool,
+    remote_room_addr: Option<String>,
     new_profile_name: String,
     java_list: Vec<launcher::launch::JavaInfo>,
     selected_java: Option<launcher::launch::JavaInfo>,
@@ -284,6 +289,11 @@ impl App {
             friend_code_input: String::new(),
             friend_port_input,
             friend_advertise_input,
+            host_room_port_input: "25565".into(),
+            host_room_public: false,
+            host_room_ticket: None,
+            host_room_busy: false,
+            remote_room_addr: None,
             new_profile_name: String::new(),
             java_list: Vec::new(),
             selected_java: None,
@@ -451,6 +461,14 @@ enum Message {
     JoinFriendRoom(String),
     RemoteRoomJoined(Result<String, String>),
     LeaveFriendRoom,
+    RemoteRoomLeft,
+    HostRoomPortChanged(String),
+    HostRoomPublicToggled(bool),
+    PublishRoom,
+    RoomPublished(Result<String, String>),
+    StopHostingRoom,
+    RoomStopped(Result<(), String>),
+    CopyRoomTicket,
     FriendSyncFinished(String, Result<bool, String>),
     FriendBackgroundSyncFinished(Result<bool, String>),
     JavaLoaded(Vec<launcher::launch::JavaInfo>),
@@ -834,10 +852,21 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             persist_config_task(app)
         }
         Message::ProfileSelected(p) => {
+            let previous_host = if app.host_room_ticket.is_some() {
+                app.selected_profile.as_ref().map(|profile| profile.uuid.clone())
+            } else {
+                None
+            };
+            app.host_room_ticket = None;
+            app.host_room_busy = false;
             app.selected_profile = Some(p);
             app.friends = launcher::friends::FriendSnapshot::default();
             app.friend_code_input.clear();
-            Task::batch([load_friends_task(app), sync_friend_service_task(app)])
+            Task::batch([
+                stop_host_room_task(previous_host),
+                load_friends_task(app),
+                sync_friend_service_task(app),
+            ])
         }
         Message::JavaSelected(j) => {
             app.selected_java = Some(j);
@@ -865,10 +894,21 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.status = format!("已创建档案: {}", profile.name);
             app.new_profile_name.clear();
             app.profiles.push(profile.clone());
+            let previous_host = if app.host_room_ticket.is_some() {
+                app.selected_profile.as_ref().map(|profile| profile.uuid.clone())
+            } else {
+                None
+            };
+            app.host_room_ticket = None;
+            app.host_room_busy = false;
             app.selected_profile = Some(profile);
             app.friends = launcher::friends::FriendSnapshot::default();
             app.friend_code_input.clear();
-            Task::batch([load_friends_task(app), sync_friend_service_task(app)])
+            Task::batch([
+                stop_host_room_task(previous_host),
+                load_friends_task(app),
+                sync_friend_service_task(app),
+            ])
         }
         Message::ProfileCreated(Err(e)) => {
             app.status = format!("创建档案失败: {}", e);
@@ -1027,29 +1067,136 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::FriendServiceStopped => Task::none(),
         Message::JoinFriendRoom(ticket) => {
+            let Some(profile) = app.selected_profile.as_ref() else {
+                app.status = "请先选择一个 Minecraft 账户".into();
+                return Task::none();
+            };
+            let account_id = profile.uuid.clone();
+            app.remote_room_addr = None;
             app.status = "正在通过 P2P 打洞连接好友房间...".into();
             Task::perform(
-                async move { launcher::tunnel::join_remote_room(&ticket, 0).await },
+                async move {
+                    launcher::tunnel::join_remote_room(&ticket, 0, &account_id).await
+                },
                 Message::RemoteRoomJoined,
             )
         }
         Message::RemoteRoomJoined(Ok(local_addr)) => {
-            app.status = format!("P2P 隧道已建立 ({local_addr})，正在加入游戏...");
+            app.remote_room_addr = Some(local_addr.clone());
+            app.status = format!("P2P 本地代理已就绪 ({local_addr})，正在加入游戏...");
             start_launch(
                 app,
                 Some(launcher::launch::QuickPlayTarget::Multiplayer(local_addr)),
             )
         }
         Message::RemoteRoomJoined(Err(error)) => {
+            app.remote_room_addr = None;
             app.status = format!("连接好友房间失败: {error}");
             Task::none()
         }
         Message::LeaveFriendRoom => {
+            app.remote_room_addr = None;
             app.status = "已断开与好友房间的连接".into();
             Task::perform(
                 async { launcher::tunnel::leave_remote_room().await },
-                |_| Message::Tick(std::time::Instant::now()),
+                |_| Message::RemoteRoomLeft,
             )
+        }
+        Message::RemoteRoomLeft => Task::none(),
+        Message::HostRoomPortChanged(port) => {
+            app.host_room_port_input = port;
+            Task::none()
+        }
+        Message::HostRoomPublicToggled(public) => {
+            app.host_room_public = public;
+            Task::none()
+        }
+        Message::PublishRoom => {
+            if app.host_room_busy {
+                return Task::none();
+            }
+            let Some(profile) = app.selected_profile.as_ref() else {
+                app.status = "请先选择一个 Minecraft 账户".into();
+                return Task::none();
+            };
+            let port = match app.host_room_port_input.trim().parse::<u16>() {
+                Ok(port) if port != 0 => port,
+                _ => {
+                    app.status = "请输入有效的本机端口（1–65535）".into();
+                    return Task::none();
+                }
+            };
+            let account_id = profile.uuid.clone();
+            let host_name = if profile.name.trim().is_empty() {
+                "Minecraft 玩家".to_string()
+            } else {
+                profile.name.clone()
+            };
+            let policy = if app.host_room_public {
+                launcher::tunnel::RoomAccessPolicy::PublicWithTicket
+            } else {
+                launcher::tunnel::RoomAccessPolicy::FriendsOnly
+            };
+            app.host_room_busy = true;
+            app.status = format!("正在发布本机端口 {port} 的 P2P 房间...");
+            Task::perform(
+                async move {
+                    launcher::tunnel::publish_world_room(
+                        &account_id,
+                        "Minecraft 世界",
+                        "survival",
+                        &host_name,
+                        8,
+                        port,
+                        policy,
+                    )
+                    .await
+                },
+                Message::RoomPublished,
+            )
+        }
+        Message::RoomPublished(Ok(ticket)) => {
+            app.host_room_busy = false;
+            app.host_room_ticket = Some(ticket);
+            app.status = "房间已发布；好友的「加入房间」按钮或房主复制票据即可加入".into();
+            Task::none()
+        }
+        Message::RoomPublished(Err(error)) => {
+            app.host_room_busy = false;
+            app.status = format!("发布房间失败: {error}");
+            Task::none()
+        }
+        Message::StopHostingRoom => {
+            let Some(profile) = app.selected_profile.as_ref() else {
+                return Task::none();
+            };
+            let account_id = profile.uuid.clone();
+            app.host_room_busy = true;
+            app.status = "正在停止房间...".into();
+            Task::perform(
+                async move { launcher::tunnel::unpublish_world_room(&account_id).await },
+                Message::RoomStopped,
+            )
+        }
+        Message::RoomStopped(Ok(())) => {
+            app.host_room_busy = false;
+            if app.host_room_ticket.take().is_some() {
+                app.status = "已停止主持房间".into();
+            }
+            Task::none()
+        }
+        Message::RoomStopped(Err(error)) => {
+            app.host_room_busy = false;
+            app.status = format!("停止房间失败: {error}");
+            Task::none()
+        }
+        Message::CopyRoomTicket => {
+            if let Some(ticket) = app.host_room_ticket.clone() {
+                iced::clipboard::write(ticket)
+            } else {
+                app.status = "当前没有已发布的房间票据".into();
+                Task::none()
+            }
         }
         Message::FriendPresenceReset(Ok(())) => Task::none(),
         Message::FriendPresenceReset(Err(error)) => {
@@ -1129,14 +1276,25 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.game_running = false;
             app.active_managed = false;
             app.status = "游戏已退出".to_string();
-            if let Some(id) = app.active_map.take() {
-                let config = app.config.clone();
+            let leave_room = if app.remote_room_addr.take().is_some() {
                 Task::perform(
-                    async move { launcher::maps::refresh_after_play(&config, &id).map(|_| ()) },
-                    Message::MapRefreshed,
+                    async { launcher::tunnel::leave_remote_room().await },
+                    |_| Message::RemoteRoomLeft,
                 )
             } else {
                 Task::none()
+            };
+            if let Some(id) = app.active_map.take() {
+                let config = app.config.clone();
+                Task::batch([
+                    leave_room,
+                    Task::perform(
+                        async move { launcher::maps::refresh_after_play(&config, &id).map(|_| ()) },
+                        Message::MapRefreshed,
+                    ),
+                ])
+            } else {
+                leave_room
             }
         }
         Message::LaunchFinished(Err(e)) => {
@@ -1145,7 +1303,15 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.active_managed = false;
             app.active_map = None;
             app.status = format!("启动失败: {}", e);
-            load_saves_task(app)
+            let leave_room = if app.remote_room_addr.take().is_some() {
+                Task::perform(
+                    async { launcher::tunnel::leave_remote_room().await },
+                    |_| Message::RemoteRoomLeft,
+                )
+            } else {
+                Task::none()
+            };
+            Task::batch([leave_room, load_saves_task(app)])
         }
         Message::KillPressed => {
             if app.active_managed {
@@ -2948,6 +3114,16 @@ fn stop_friend_service_task() -> Task<Message> {
     })
 }
 
+fn stop_host_room_task(account_id: Option<String>) -> Task<Message> {
+    match account_id {
+        Some(account_id) => Task::perform(
+            async move { launcher::tunnel::unpublish_world_room(&account_id).await },
+            Message::RoomStopped,
+        ),
+        None => Task::none(),
+    }
+}
+
 fn background_sync_managed_friends(
     profile_id: String,
     snapshot: launcher::friends::FriendSnapshot,
@@ -4375,6 +4551,11 @@ mod switch_perf {
             friend_code_input: String::new(),
             friend_port_input: AppConfig::default().friend_port.to_string(),
             friend_advertise_input: String::new(),
+            host_room_port_input: "25565".into(),
+            host_room_public: false,
+            host_room_ticket: None,
+            host_room_busy: false,
+            remote_room_addr: None,
             new_profile_name: String::new(),
             selected_java: java_list.first().cloned(),
             java_list,

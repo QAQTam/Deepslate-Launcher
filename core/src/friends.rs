@@ -416,14 +416,7 @@ pub fn load_or_create_identity(account_id: &str) -> Result<Arc<FriendIdentity>, 
         .map_err(|e| e.to_string())?;
         let temp = parent.join(format!(".friend-key-{}.tmp", Uuid::new_v4()));
         let result = (|| -> Result<(), String> {
-            let mut options = fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options.open(&temp).map_err(|e| e.to_string())?;
+            let mut file = crate::secure_fs::create_private_file(&temp)?;
             file.write_all(&content).map_err(|e| e.to_string())?;
             file.sync_all().map_err(|e| e.to_string())?;
             drop(file);
@@ -785,14 +778,7 @@ fn save_snapshot_unlocked(account_id: &str, snapshot: &FriendSnapshot) -> Result
     let content = serde_json::to_vec_pretty(snapshot).map_err(|e| e.to_string())?;
     let temp = parent.join(format!(".friends-{}.tmp", Uuid::new_v4()));
     let result = (|| -> Result<(), String> {
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temp).map_err(|e| e.to_string())?;
+        let mut file = crate::secure_fs::create_private_file(&temp)?;
         file.write_all(&content).map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
         drop(file);
@@ -1777,23 +1763,9 @@ fn validate_entry(friend: &FriendEntry) -> Result<(), String> {
 
 fn create_private_dir(path: &Path) -> Result<(), String> {
     reject_symlink(path)?;
-    if !path.exists() {
-        let mut builder = fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder.create(path).map_err(|e| e.to_string())?;
-    }
+    crate::secure_fs::create_private_dir(path)?;
     if !path.is_dir() {
         return Err("好友数据路径不是目录".into());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

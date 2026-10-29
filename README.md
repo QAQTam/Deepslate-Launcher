@@ -182,8 +182,12 @@ Minecraft 世界目录，额外带一个游戏会忽略的 `map.json`；游戏�
   并把游戏内操作回传后端。
 - **开关**：好友页的「启用去中心化好友网络」控制监听/连接；「允许好友申请」控制是否接受
   陌生申请。关闭网络不会删除好友关系。
+- **P2P 世界隧道**：好友页的「主持世界（P2P 隧道）」把本机 Minecraft 端口发布成
+  `DSR-` 票据；好友列表中的「加入房间」会建立本机回环代理并启动客户端。隧道基于
+  Iroh QUIC，具备 STUN/UPnP 和公网 Relay 兜底；好友房默认要求 DL2 身份签名认证，
+  也可显式切换为持票加入。好友图本身的直连仍是普通 TCP，不会因此获得 NAT 穿透。
 
-限制：暂不支持同账户多设备自动共享身份、NAT 穿透、群组/聊天/举报；显示名和档案 UUID
+限制：暂不支持同账户多设备自动共享身份、群组/聊天/举报；显示名和档案 UUID
 是对端签名声明，未与 Mojang 正版账号做强绑定，好友码才是信任锚。详细威胁模型见
 [去中心化好友设计](docs/current/DESIGN-friends-decentralized.md)。
 
@@ -208,6 +212,8 @@ core/src/
   fabric.rs      Fabric 元数据与安装
   friends.rs     好友身份 / 快照 / 签名关系状态机 / 外发队列
   friendnet.rs   去中心化好友网络：安全握手 / 加密帧 / 重连 / 中继 / presence
+  secure_fs.rs   跨平台私有文件：Unix 0700/0600，Windows owner-only DACL
+  tunnel.rs      世界 P2P 隧道：Iroh QUIC / DSR 票据 / 好友身份挑战 / 端口转发
   game_options.rs options.txt 默认值（中文 / 跳过引导）
   launch.rs      版本链合并、规则/占位符求值、启动计划与进程
   maps.rs        地图库：map.json / 导入导出 / 列表 / 回收站

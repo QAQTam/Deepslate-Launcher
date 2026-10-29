@@ -170,13 +170,21 @@ pub async fn sync_service(account_id: &str, config: &AppConfig) -> Result<(), St
             return Err(message);
         }
     };
-    // Clear a stale in-game presence from a previous crash before the hub
-    // starts advertising it.
-    if matches!(
+    // Clear stale in-game presence and a dead hosted-room ticket from a
+    // previous process before the hub starts advertising it. A live host
+    // session (for example after a settings restart) is left untouched.
+    let host_active = crate::tunnel::host_is_active();
+    let stale_presence = matches!(
         snapshot.self_presence.as_str(),
         "playing_offline" | "playing_realms" | "playing_server" | "playing_hosted_server"
-    ) {
-        let _ = friends::set_self_presence_for(account_id, friends::PRESENCE_ONLINE);
+    ) && !(host_active && snapshot.self_presence == "playing_hosted_server");
+    let stale_room = snapshot.self_room_ticket.is_some() && !host_active;
+    if stale_presence || stale_room {
+        let _ = friends::set_self_presence_with_room_for(
+            account_id,
+            friends::PRESENCE_ONLINE,
+            None,
+        );
     }
     let identity = friends::load_or_create_identity(account_id)?;
     let (events_tx, events_rx) = mpsc::channel(256);

@@ -135,55 +135,38 @@ impl BridgeListener {
         cache: &Path,
         owner_profile_id: Option<String>,
     ) -> Result<Self, String> {
-        #[cfg(not(unix))]
-        {
-            let _ = cache;
-            let _ = owner_profile_id;
-            return Err("当前平台尚未实现受保护的 Bridge 会话文件".into());
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-                .await
-                .map_err(|e| e.to_string())?;
-            let session_id = Uuid::new_v4().to_string();
-            let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-            std::fs::create_dir_all(cache).map_err(|e| e.to_string())?;
-            let dir = cache.join(format!("bridge-{session_id}"));
-            std::fs::DirBuilder::new()
-                .mode(0o700)
-                .create(&dir)
-                .map_err(|e| e.to_string())?;
-            let description = dir.join("session.json");
-            let result = (|| -> Result<(), String> {
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(&description)
-                    .map_err(|e| e.to_string())?;
-                serde_json::to_writer(
-                    &mut file,
-                    &json!({"session_id": session_id, "token": token,
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .map_err(|e| e.to_string())?;
+        let session_id = Uuid::new_v4().to_string();
+        let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        std::fs::create_dir_all(cache).map_err(|e| e.to_string())?;
+        let dir = cache.join(format!("bridge-{session_id}"));
+        crate::secure_fs::create_private_dir(&dir)?;
+        let description = dir.join("session.json");
+        let result = (|| -> Result<(), String> {
+            let mut file = crate::secure_fs::create_private_file(&description)?;
+            serde_json::to_writer(
+                &mut file,
+                &json!({"session_id": session_id, "token": token,
                     "port": listener.local_addr().map_err(|e| e.to_string())?.port(),
                     "profile_id": owner_profile_id}),
-                )
-                .map_err(|e| e.to_string())?;
-                Ok(())
-            })();
-            if let Err(e) = result {
-                let _ = std::fs::remove_dir_all(&dir);
-                return Err(e);
-            }
-            Ok(Self {
-                listener,
-                session_id,
-                token,
-                owner_profile_id,
-                description,
-            })
+            )
+            .map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(e);
         }
+        Ok(Self {
+            listener,
+            session_id,
+            token,
+            owner_profile_id,
+            description,
+        })
     }
 
     pub fn description_path(&self) -> &Path {
@@ -508,7 +491,7 @@ pub async fn run_world_session_with_commands(
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -524,15 +507,22 @@ mod tests {
     async fn handshake_rejects_intruder_and_exchanges_bounded_messages() {
         let cache = std::env::temp_dir().join(format!("bridge-test-{}", Uuid::new_v4()));
         let listener = BridgeListener::bind(&cache).await.unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            std::fs::metadata(listener.description_path())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(listener.description_path())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        #[cfg(windows)]
+        assert!(std::fs::metadata(listener.description_path())
+            .unwrap()
+            .is_file());
         let info: Value =
             serde_json::from_slice(&std::fs::read(listener.description_path()).unwrap()).unwrap();
         let port = info["port"].as_u64().unwrap() as u16;

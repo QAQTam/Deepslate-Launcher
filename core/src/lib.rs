@@ -25,6 +25,7 @@ pub mod net;
 pub mod profiles;
 pub mod runtime;
 pub mod saves;
+pub mod secure_fs;
 pub mod server;
 pub mod server_ping;
 pub mod tunnel;

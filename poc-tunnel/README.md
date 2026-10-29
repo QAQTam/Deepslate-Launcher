@@ -2,7 +2,9 @@
 
 这是一个完全独立的轻量级网络打洞与 TCP 代理验证原型，专为验证**无公网环境（如云电脑、严格 NAT、校园网）下的 Minecraft P2P 联机可行性**而设计。
 
-底层基于 **Iroh 1.4 (QUIC + STUN + UPnP + 公网 Relay 保底)**，并以 **Ed25519 公钥** 作为节点唯一标识，与 Deepslate Launcher 现有的 DL2 好友身份体系完全吻合。
+底层基于 **Iroh 1.4 (QUIC + STUN + UPnP + 公网 Relay 保底)**。注意：本 PoC 的 Iroh
+节点密钥是临时生成的，不校验 Deepslate DL2 好友身份；好友身份认证在启动器的
+`core/src/tunnel.rs` 中实现。
 
 ---
 

@@ -57,11 +57,11 @@
 - Bridge 0.5.0：`DeepslateFriendsService.presence(status)` 返回好友 presence，并通过新 `SelfPresence` 事件把游戏自身状态回传启动器；`presence_from_authlib` 映射到 `online/playing_* / offline`。游戏内添加好友输入上限从 64 提到 512，Java 只把公钥段转大写，保留大小写敏感的 base64url 地址段。
 - 内嵌 JAR：`core/assets/deepslate-bridge-0.5.0.jar`，与 `bridge/build/libs/deepslate-bridge-0.5.0.jar` SHA-256 均为 `8c85c23e4763cc0bf5faf0d0df92a2847ddb3a9a983bf8ce7b4141695e7e3e35`；SHA-1 `1cdc01d221c1a59d69bead10ec6f7b6bebfbb350`。旧 0.4.0 JAR 保留在仓库中但不再嵌入；增强组件需在下次安装流程中更新到 0.5.0，否则旧 Bridge 不识别 DL2、也不会回传 presence。
 - 验证：`./gradlew --offline build` 成功；`cargo check --workspace` 通过；`cargo test -p deepslate-core --lib -- --test-threads=1` 为 137 passed / 6 ignored；`cargo test -p gui-iced --bin deepslate-iced` 为 28 passed。新增测试覆盖加密握手、错误身份拒绝、签名篡改拒绝、presence/关系消息解析、真实监听端口上的「申请→Ack→接受→accept 外发→presence→删除」全链路、双账户申请/接受/presence/删除/重放状态机、错误目标公钥拒绝。
-- **尚未实机验证**：两台机器直连/中继、26.3 原生好友 Overlay 的列表与 presence、游戏内长 DL2 码输入、启动器崩溃/断网重连、端口占用和根目录切换；Windows ACL 仍按前述暂缓。当前没有中心服务器，也没有 NAT 穿透；中继只做单跳且能看到申请内容，显示名/UUID 未与 Mojang 正版账号做强绑定。
+- **尚未实机验证**：两台机器直连/中继、26.3 原生好友 Overlay 的列表与 presence、游戏内长 DL2 码输入、启动器崩溃/断网重连、端口占用和根目录切换；Windows 已完成 IPC/ACL 代码与单元测试，但还没有 Java 25 + 26.3 + Bridge 的 Windows 实机证据。当前没有中心服务器；好友图直连没有 NAT 穿透，世界 P2P 隧道使用 Iroh 的 STUN/UPnP/Relay。中继只做单跳且能看到申请内容，显示名/UUID 未与 Mojang 正版账号做强绑定。
 
 ## 关键剩余工作（按规格，非完整验收结论）
 
-1. **按用户指示暂不继续 Windows 适配。** 当前 `BridgeListener::bind` 在非 Unix 平台明确报错；Windows 会话文件必须在创建时限制为当前用户可读，验证 ACL、会话清理、文件替换和游戏退出后持锁。此前开始的 Windows ACL/替换草稿已撤回，未留下可用实现；Windows 交叉编译已中断，没有 Windows 实机证据。`x86_64-pc-windows-gnu` Rust 标准库已安装到本机工具链，仅表示工具链变化，不表示支持完成。
+1. **Windows 适配代码已落地，仍需实机验收。** `core/src/secure_fs.rs` 已为 Bridge 会话目录/文件、好友身份密钥和快照提供平台实现：Unix 保持 0700/0600，Windows 使用 owner-only DACL（拒绝继承）。`BridgeListener::bind` 的非 Unix 硬拒绝已移除；Windows 上 `bridge::tests` 的握手与受管会话测试通过。仍需在 Windows 上验证 Java 25 + Fabric 26.3 + Bridge 握手的真实游戏会话、会话清理、文件替换和游戏退出后持锁；没有 Windows + Minecraft 实机证据。
 2. macOS 尚未实机验证；Unix 路径并不等于 macOS 验收。Linux 实机仍需覆盖暂停菜单中的实际“保存并退出”、资源重载、世界损坏/兼容提示、启动器意外退出与桥接中断等。
 3. 增强模式 Realm 明确未实现。联机连接失败事件目前是通用错误；远程断线、被踢出、服务器资源包、正版验证及返回错误界面的完整行为需核实，避免凭本机离线服务器结果推断全部联机可用。
 4. 缺少 GUI 视觉、560px 小窗口、资源加载／世界加载／保存提示及错误流程的实际验收。游戏内仍需完善世界加载与保存画面；等待画面、加载画面尚无截图验证。启动器进度是分阶段数据，事件总线仍需检查并发任务进度归属，避免显示其他任务的进度。
