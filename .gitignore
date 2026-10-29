@@ -29,3 +29,6 @@ ehthumbs.db
 /bridge/.gradle/
 /bridge/build/
 /bridge/run/
+
+# Local PoC test binaries
+/dist-poc/

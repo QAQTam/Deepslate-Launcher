@@ -43,6 +43,7 @@ use crate::nbt::{NbtFile, Tag};
 use crate::saves::{self, WorldSummary};
 
 pub const MANIFEST_NAME: &str = "map.json";
+pub const CONFIG_NAME: &str = "config.toml";
 pub const TRASH_DIR: &str = ".deepslate-trash";
 pub const STAGING_DIR: &str = ".staging";
 pub const EXPORT_DIR: &str = "exports";
@@ -182,11 +183,131 @@ impl MapManifest {
     }
 }
 
+/// 地图专属运行配置（存放在 `maps/<id>/config.toml`）。
+/// 字段全为 `Option`，为 `None` 时继承启动器全局配置。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct MapLaunchConfig {
+    /// 锁定绑定的游戏版本（如 "1.21.1", "fabric-loader-0.16.9-1.21.1"）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// 专属 Java 可执行文件路径
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub java_path: Option<String>,
+    /// 专属最大堆内存（MB），0 或 None 表示继承全局
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mb: Option<u32>,
+    /// 垃圾回收策略："default" 或 "zgc"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gc: Option<String>,
+    /// 是否全屏
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fullscreen: Option<bool>,
+    /// 窗口宽度
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_width: Option<u32>,
+    /// 窗口高度
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_height: Option<u32>,
+    /// 图形后端："default", "opengl", "vulkan"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graphics_backend: Option<String>,
+    /// 是否禁用多人/局域网
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_multiplayer: Option<bool>,
+    /// 是否禁用聊天
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_chat: Option<bool>,
+    /// 首次进入实例时是否写入中文 / 跳过辅助功能引导
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apply_game_defaults: Option<bool>,
+}
+
+impl MapLaunchConfig {
+    /// 是否没有任何自定义覆盖项
+    pub fn is_empty(&self) -> bool {
+        self.version.is_none()
+            && self.java_path.is_none()
+            && self.memory_mb.is_none()
+            && self.gc.is_none()
+            && self.fullscreen.is_none()
+            && self.window_width.is_none()
+            && self.window_height.is_none()
+            && self.graphics_backend.is_none()
+            && self.disable_multiplayer.is_none()
+            && self.disable_chat.is_none()
+            && self.apply_game_defaults.is_none()
+    }
+}
+
+/// 地图与全局配置合并后的有效运行配置（生效的 EffectiveLaunchPlan 依据）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveLaunchConfig {
+    pub version: String,
+    pub java_path: Option<String>,
+    pub memory_mb: u32,
+    pub gc: String,
+    pub fullscreen: bool,
+    pub window_width: u32,
+    pub window_height: u32,
+    pub graphics_backend: String,
+    pub disable_multiplayer: bool,
+    pub disable_chat: bool,
+    pub apply_game_defaults: bool,
+}
+
+impl EffectiveLaunchConfig {
+    pub fn resolve(global: &AppConfig, map_config: Option<&MapLaunchConfig>) -> Self {
+        match map_config {
+            Some(mc) => Self {
+                version: mc
+                    .version
+                    .clone()
+                    .or_else(|| global.last_version.clone())
+                    .unwrap_or_default(),
+                java_path: mc.java_path.clone().or_else(|| global.java_path.clone()),
+                memory_mb: mc
+                    .memory_mb
+                    .filter(|&m| m > 0)
+                    .unwrap_or(global.enhanced_max_memory_mb),
+                gc: mc.gc.clone().unwrap_or_else(|| global.enhanced_gc.clone()),
+                fullscreen: mc.fullscreen.unwrap_or(global.fullscreen),
+                window_width: mc.window_width.unwrap_or(global.window_width),
+                window_height: mc.window_height.unwrap_or(global.window_height),
+                graphics_backend: mc
+                    .graphics_backend
+                    .clone()
+                    .unwrap_or_else(|| global.graphics_backend.clone()),
+                disable_multiplayer: mc
+                    .disable_multiplayer
+                    .unwrap_or(global.disable_multiplayer),
+                disable_chat: mc.disable_chat.unwrap_or(global.disable_chat),
+                apply_game_defaults: mc
+                    .apply_game_defaults
+                    .unwrap_or(global.apply_game_defaults),
+            },
+            None => Self {
+                version: global.last_version.clone().unwrap_or_default(),
+                java_path: global.java_path.clone(),
+                memory_mb: global.enhanced_max_memory_mb,
+                gc: global.enhanced_gc.clone(),
+                fullscreen: global.fullscreen,
+                window_width: global.window_width,
+                window_height: global.window_height,
+                graphics_backend: global.graphics_backend.clone(),
+                disable_multiplayer: global.disable_multiplayer,
+                disable_chat: global.disable_chat,
+                apply_game_defaults: global.apply_game_defaults,
+            },
+        }
+    }
+}
+
 /// 地图列表项：`Deref` 到 `WorldSummary`，GUI/CLI 可以直接读 `id/name/...`。
 #[derive(Debug, Clone)]
 pub struct MapSummary {
     pub manifest: MapManifest,
     pub world: WorldSummary,
+    pub custom_config: Option<MapLaunchConfig>,
 }
 
 impl Deref for MapSummary {
@@ -200,6 +321,14 @@ impl Deref for MapSummary {
 impl MapSummary {
     pub fn source_label(&self) -> &'static str {
         self.manifest.source.label()
+    }
+
+    pub fn has_custom_config(&self) -> bool {
+        self.custom_config.as_ref().map_or(false, |c| !c.is_empty())
+    }
+
+    pub fn effective_config(&self, global: &AppConfig) -> EffectiveLaunchConfig {
+        EffectiveLaunchConfig::resolve(global, self.custom_config.as_ref())
     }
 }
 
@@ -225,6 +354,59 @@ pub fn map_dir(config: &AppConfig, id: &str) -> Result<PathBuf, String> {
 
 fn manifest_path(dir: &Path) -> PathBuf {
     dir.join(MANIFEST_NAME)
+}
+
+pub fn config_path(dir: &Path) -> PathBuf {
+    dir.join(CONFIG_NAME)
+}
+
+/// 读取指定地图的专属运行配置。若配置文件不存在，返回默认（空）配置。
+pub fn load_config(config: &AppConfig, id: &str) -> Result<MapLaunchConfig, String> {
+    let dir = map_dir(config, id)?;
+    load_config_from_dir(&dir)
+}
+
+pub fn load_config_from_dir(dir: &Path) -> Result<MapLaunchConfig, String> {
+    let path = config_path(dir);
+    if !path.exists() {
+        return Ok(MapLaunchConfig::default());
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|e| format!("读取地图配置失败 {}: {e}", path.display()))?;
+    toml::from_str(&content).map_err(|e| format!("解析地图配置失败 {}: {e}", path.display()))
+}
+
+/// 保存地图专属运行配置。若配置全为空，则自动清理原 config.toml 文件。
+pub fn save_config(
+    config: &AppConfig,
+    id: &str,
+    map_config: &MapLaunchConfig,
+) -> Result<(), String> {
+    let dir = map_dir(config, id)?;
+    save_config_to_dir(&dir, map_config)
+}
+
+pub fn save_config_to_dir(dir: &Path, map_config: &MapLaunchConfig) -> Result<(), String> {
+    let path = config_path(dir);
+    if map_config.is_empty() {
+        if path.exists() {
+            let _ = fs::remove_file(&path);
+        }
+        return Ok(());
+    }
+    let content = toml::to_string_pretty(map_config)
+        .map_err(|e| format!("序列化地图配置失败: {e}"))?;
+    fs::write(&path, content).map_err(|e| format!("写入地图配置失败 {}: {e}", path.display()))
+}
+
+/// 删除地图专属配置（恢复纯继承全局设置）
+pub fn remove_config(config: &AppConfig, id: &str) -> Result<(), String> {
+    let dir = map_dir(config, id)?;
+    let path = config_path(&dir);
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| format!("删除地图配置失败 {}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// 创建地图库基础目录。列表/导入/启动前都可以安全调用。
@@ -382,7 +564,12 @@ pub fn finish_client_creation(config: &AppConfig, id: &str) -> Result<MapSummary
     manifest.sync_world(&world);
     write_manifest(&dir, &manifest)?;
     fs::remove_file(record).map_err(|e| format!("移除创建记录失败: {e}"))?;
-    Ok(MapSummary { manifest, world })
+    let custom_config = load_config_from_dir(&dir).ok().filter(|c| !c.is_empty());
+    Ok(MapSummary {
+        manifest,
+        world,
+        custom_config,
+    })
 }
 
 pub fn validate_id(id: &str) -> Result<(), String> {
@@ -429,7 +616,12 @@ pub fn list(config: &AppConfig) -> Result<Vec<MapSummary>, String> {
             }
         };
         manifest.id = id.to_string();
-        maps.push(MapSummary { manifest, world });
+        let custom_config = load_config_from_dir(&dir).ok().filter(|c| !c.is_empty());
+        maps.push(MapSummary {
+            manifest,
+            world,
+            custom_config,
+        });
     }
     maps.sort_by(|a, b| {
         b.world
@@ -719,7 +911,12 @@ pub fn refresh_after_play(config: &AppConfig, id: &str) -> Result<MapSummary, St
     manifest.id = id.to_string();
     manifest.sync_world(&world);
     write_manifest(&dir, &manifest)?;
-    Ok(MapSummary { manifest, world })
+    let custom_config = load_config_from_dir(&dir).ok().filter(|c| !c.is_empty());
+    Ok(MapSummary {
+        manifest,
+        world,
+        custom_config,
+    })
 }
 
 /// 导入文件或目录：目录按世界目录处理，zip 自动找 `level.dat`。
@@ -828,7 +1025,12 @@ pub fn adopt_generated_dir(
         manifest.generator = generator;
         manifest.updated_at = now_ms();
         write_manifest(&target, &manifest)?;
-        Ok(MapSummary { manifest, world })
+        let custom_config = load_config_from_dir(&target).ok().filter(|c| !c.is_empty());
+        Ok(MapSummary {
+            manifest,
+            world,
+            custom_config,
+        })
     })();
     if result.is_err() {
         let _ = fs::remove_dir_all(&target);
@@ -864,7 +1066,12 @@ fn adopt_stage(
         manifest.migrated_from = migrated_from;
         manifest.updated_at = now_ms();
         write_manifest(&target, &manifest)?;
-        Ok(MapSummary { manifest, world })
+        let custom_config = load_config_from_dir(&target).ok().filter(|c| !c.is_empty());
+        Ok(MapSummary {
+            manifest,
+            world,
+            custom_config,
+        })
     })();
     if result.is_err() {
         let _ = fs::remove_dir_all(&target);
@@ -1393,6 +1600,152 @@ mod tests {
 
         delete_backup(&config, &map.id, &name).unwrap();
         assert!(list_backups(&config, &map.id).unwrap().is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn map_launch_config_toml_roundtrip() {
+        let config = MapLaunchConfig {
+            version: Some("1.21.1".to_string()),
+            java_path: Some("/custom/bin/java".to_string()),
+            memory_mb: Some(4096),
+            gc: Some("zgc".to_string()),
+            fullscreen: Some(true),
+            window_width: Some(1920),
+            window_height: Some(1080),
+            graphics_backend: Some("vulkan".to_string()),
+            disable_multiplayer: Some(true),
+            disable_chat: Some(false),
+            apply_game_defaults: Some(true),
+        };
+        let encoded = toml::to_string_pretty(&config).unwrap();
+        let decoded: MapLaunchConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded, config);
+        assert!(!decoded.is_empty());
+
+        let empty = MapLaunchConfig::default();
+        assert!(empty.is_empty());
+        let empty_encoded = toml::to_string_pretty(&empty).unwrap();
+        assert!(empty_encoded.trim().is_empty());
+    }
+
+    #[test]
+    fn effective_launch_config_cascading() {
+        let mut global = AppConfig::default();
+        global.last_version = Some("26.3".to_string());
+        global.java_path = Some("/system/java".to_string());
+        global.enhanced_max_memory_mb = 2048;
+        global.enhanced_gc = "default".to_string();
+        global.fullscreen = false;
+        global.window_width = 1280;
+        global.window_height = 720;
+        global.graphics_backend = "default".to_string();
+        global.disable_multiplayer = false;
+        global.disable_chat = false;
+
+        // 1. 无地图覆盖时，完全继承全局
+        let eff_default = EffectiveLaunchConfig::resolve(&global, None);
+        assert_eq!(eff_default.version, "26.3");
+        assert_eq!(eff_default.java_path.as_deref(), Some("/system/java"));
+        assert_eq!(eff_default.memory_mb, 2048);
+        assert!(!eff_default.fullscreen);
+
+        // 2. 有地图局部覆盖时，覆盖字段取地图值，未覆盖字段继续继承全局
+        let mut custom = MapLaunchConfig::default();
+        custom.version = Some("1.20.1".to_string());
+        custom.memory_mb = Some(6144);
+        custom.fullscreen = Some(true);
+
+        let eff_custom = EffectiveLaunchConfig::resolve(&global, Some(&custom));
+        assert_eq!(eff_custom.version, "1.20.1"); // 就近覆盖
+        assert_eq!(eff_custom.memory_mb, 6144); // 就近覆盖
+        assert!(eff_custom.fullscreen); // 就近覆盖
+        assert_eq!(eff_custom.java_path.as_deref(), Some("/system/java")); // 继承全局
+        assert_eq!(eff_custom.window_width, 1280); // 继承全局
+        assert_eq!(eff_custom.window_height, 720); // 继承全局
+    }
+
+    #[test]
+    fn map_config_save_load_remove_lifecycle() {
+        let (config, root) = temp_config();
+        let world = fixture_world(&root);
+        let map = import_dir(&config, &world).unwrap();
+
+        // 初始无配置
+        let initial = load_config(&config, &map.id).unwrap();
+        assert!(initial.is_empty());
+
+        // 保存专属配置
+        let custom = MapLaunchConfig {
+            version: Some("fabric-loader-0.16.0-1.21.1".to_string()),
+            memory_mb: Some(8192),
+            ..Default::default()
+        };
+        save_config(&config, &map.id, &custom).unwrap();
+
+        let loaded = load_config(&config, &map.id).unwrap();
+        assert_eq!(
+            loaded.version.as_deref(),
+            Some("fabric-loader-0.16.0-1.21.1")
+        );
+        assert_eq!(loaded.memory_mb, Some(8192));
+        assert!(!loaded.is_empty());
+
+        // 重新列表，MapSummary 应携带 custom_config
+        let list_maps = list(&config).unwrap();
+        let current = list_maps.iter().find(|m| m.id == map.id).unwrap();
+        assert!(current.has_custom_config());
+        assert_eq!(
+            current.effective_config(&config).version,
+            "fabric-loader-0.16.0-1.21.1"
+        );
+        assert_eq!(current.effective_config(&config).memory_mb, 8192);
+
+        // 删除专属配置
+        remove_config(&config, &map.id).unwrap();
+        let after_remove = load_config(&config, &map.id).unwrap();
+        assert!(after_remove.is_empty());
+
+        let list_maps2 = list(&config).unwrap();
+        let current2 = list_maps2.iter().find(|m| m.id == map.id).unwrap();
+        assert!(!current2.has_custom_config());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn backup_and_restore_preserves_custom_config() {
+        let (config, root) = temp_config();
+        let world = fixture_world(&root);
+        let map = import_dir(&config, &world).unwrap();
+
+        // 设置专属配置并打快照
+        let custom = MapLaunchConfig {
+            version: Some("1.20.4".to_string()),
+            memory_mb: Some(4096),
+            ..Default::default()
+        };
+        save_config(&config, &map.id, &custom).unwrap();
+        let backup_name = backup(&config, &map.id).unwrap();
+
+        // 修改当前配置
+        let modified = MapLaunchConfig {
+            version: Some("26.3".to_string()),
+            memory_mb: Some(2048),
+            ..Default::default()
+        };
+        save_config(&config, &map.id, &modified).unwrap();
+        assert_eq!(
+            load_config(&config, &map.id).unwrap().version.as_deref(),
+            Some("26.3")
+        );
+
+        // 还原快照，配置应同步回滚至 1.20.4
+        restore_backup(&config, &map.id, &backup_name).unwrap();
+        let restored = load_config(&config, &map.id).unwrap();
+        assert_eq!(restored.version.as_deref(), Some("1.20.4"));
+        assert_eq!(restored.memory_mb, Some(4096));
+
         let _ = fs::remove_dir_all(root);
     }
 }

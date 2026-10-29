@@ -1,7 +1,7 @@
 [package]
 name = "deepslate-core"
 version = "0.1.0"
-description = "Obsidian Launcher 框架无关的业务核心"
+description = "Deepslate Launcher 框架无关的业务核心"
 edition = "2021"
 license = "MIT"
 
@@ -23,6 +23,9 @@ md-5 = "0.11"
 url = "2.4"
 ring = "0.17"
 base64 = "0.22"
+toml = "1.1.8"
+iroh = "1.4.1"
+bytes = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

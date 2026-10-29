@@ -1464,6 +1464,26 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
                         b.on_press(Message::SaveDeletePressed(world.id.clone()))
                     }
                 };
+                let config_btn = {
+                    let b = button(
+                        text(if world.has_custom_config() {
+                            "清除专属配置"
+                        } else {
+                            "锁定当前版本"
+                        })
+                        .size(12),
+                    )
+                    .padding(5.0);
+                    if busy {
+                        b
+                    } else {
+                        b.style(style::secondary).on_press(if world.has_custom_config() {
+                            Message::ClearMapConfig(world.id.clone())
+                        } else {
+                            Message::BindMapVersion(world.id.clone())
+                        })
+                    }
+                };
                 let more_btn = {
                     let menu_open = app.map_menu_open.as_deref() == Some(world.id.as_str());
                     let b =
@@ -1485,6 +1505,18 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
                 }
                 if world.icon.is_some() {
                     badges.push(text("有图标").size(12).color(s.text_faint).into());
+                }
+                if world.has_custom_config() {
+                    let desc = if let Some(v) = world
+                        .custom_config
+                        .as_ref()
+                        .and_then(|c| c.version.as_deref())
+                    {
+                        format!("锁定: {v}")
+                    } else {
+                        "专属配置".to_string()
+                    };
+                    badges.push(text(desc).size(12).color(s.accent).into());
                 }
                 badges.push(
                     text(world.source_label())
@@ -1522,6 +1554,7 @@ fn maps_page(app: &App, t: f32) -> Element<'_, Message> {
                 if app.map_menu_open.as_deref() == Some(world.id.as_str()) {
                     body = body.push(
                         row![
+                            config_btn,
                             rename_btn,
                             copy_btn,
                             export_btn,
@@ -2132,16 +2165,29 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
         column(app.friends.friends.iter().map(|friend| {
             let id = friend.profile_id.clone();
             let (presence_label, presence_color) = friend_presence(friend.presence.as_deref(), s);
+            let presence_text = if friend.room_ticket.is_some() {
+                "正在主持世界 (可加入) · P2P 就绪"
+            } else {
+                presence_label
+            };
             let detail = match friend.endpoint.as_deref() {
-                Some(endpoint) => format!("{presence_label} · {endpoint}"),
+                Some(endpoint) => format!("{presence_text} · {endpoint}"),
                 None => format!(
-                    "{presence_label} · 身份 {}",
+                    "{presence_text} · 身份 {}",
                     friend
                         .key
                         .as_deref()
                         .map(|key| key.chars().take(8).collect::<String>())
                         .unwrap_or_else(|| "旧版本地好友".into())
                 ),
+            };
+            let join_btn: Element<'_, Message> = if let Some(ticket) = friend.room_ticket.clone() {
+                button(text("加入房间").size(11))
+                    .on_press(Message::JoinFriendRoom(ticket))
+                    .style(style::primary)
+                    .into()
+            } else {
+                Space::new().width(0).into()
             };
             container(
                 row![
@@ -2151,6 +2197,7 @@ fn friends_page(app: &App, t: f32) -> Element<'_, Message> {
                     ]
                     .spacing(3),
                     Space::new().width(Length::Fill),
+                    join_btn,
                     button(text("删除好友").size(11))
                         .on_press(Message::SubmitFriendAction(
                             launcher::friends::FriendAction::Remove { profile_id: id },
@@ -2573,8 +2620,8 @@ fn launch_advanced_content<'a>(app: &'a App, s: &'static style::Scheme) -> Eleme
 
 fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
     let s = style::scheme_of(app.dark_mode);
-    let config_path = launcher::config::config_path()
-        .map(|p| p.join("config.json").display().to_string())
+    let config_path = launcher::config::config_file_path()
+        .map(|p| p.display().to_string())
         .unwrap_or_else(|e| e);
     let game_dir = launcher::config::resolve_game_dir(&app.config)
         .display()
@@ -2654,7 +2701,7 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
                 .size(12)
                 .color(s.text_faint),
             text_input(
-                "根目录，如 /home/xxx/Games/ObsidianLauncher",
+                "根目录，如 /home/xxx/Games/DeepslateLauncher",
                 &app.config.root_dir
             )
             .on_input(Message::RootDirChanged)
@@ -2881,7 +2928,7 @@ fn settings_page(app: &App, t: f32) -> Element<'_, Message> {
             reset_btn,
         ]
         .spacing(12),
-        text("保存时会同时记录当前选中的档案与 Java 路径。重置会删除 config.json 与 profiles.json（游戏文件不受影响）。")
+        text("保存时会同时记录当前选中的档案与 Java 路径。重置会删除 config.toml 与 profiles.json（游戏文件不受影响）。")
             .size(12)
             .color(s.text_faint),
     ]

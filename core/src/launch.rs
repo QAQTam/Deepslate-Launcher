@@ -89,6 +89,8 @@ pub struct LaunchOptions {
     pub instance_dir: PathBuf,
     /// 地图库配置；持锁直到游戏退出，防止并发修改 live 地图。
     pub map_config: Option<crate::config::AppConfig>,
+    /// 专属 JVM 调优参数（覆盖全局）；None 时根据会话类型回退
+    pub custom_jvm_tuning: Option<JvmTuning>,
     pub username: String,
     pub uuid: String,
     pub runtime_dir: PathBuf,
@@ -1564,7 +1566,13 @@ pub async fn launch(
         }
     }
 
-    if opt.managed_world.is_some() {
+    if let Some(tuning) = &opt.custom_jvm_tuning {
+        apply_enhanced_jvm_tuning(
+            &mut plan.jvm_args,
+            tuning,
+            detect_java_major(&opt.runtime_dir),
+        )?;
+    } else if opt.managed_world.is_some() {
         let config = opt.map_config.as_ref().ok_or("受管会话缺少配置")?;
         let tuning = JvmTuning {
             gc: config.enhanced_gc.clone(),

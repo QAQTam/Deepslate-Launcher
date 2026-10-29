@@ -78,6 +78,9 @@ pub struct FriendEntry {
     pub name: String,
     #[serde(default)]
     pub presence: Option<String>,
+    /// When the peer is hosting a world via P2P tunnel, this holds the serialized room ticket.
+    #[serde(default)]
+    pub room_ticket: Option<String>,
     /// Ed25519 identity of the remote account (64 lowercase hex chars).
     #[serde(default)]
     pub key: Option<String>,
@@ -126,6 +129,9 @@ pub struct FriendSnapshot {
     /// Status shared with friends while the launcher is running.
     #[serde(default = "default_presence")]
     pub self_presence: String,
+    /// When hosting a world via P2P tunnel, this holds the active room ticket.
+    #[serde(default)]
+    pub self_room_ticket: Option<String>,
     /// Signed relationship updates waiting for delivery or acknowledgement.
     #[serde(default)]
     pub outbox: Vec<OutboxItem>,
@@ -149,6 +155,7 @@ impl Default for FriendSnapshot {
             identity: String::new(),
             network: FriendNetworkState::default(),
             self_presence: default_presence(),
+            self_room_ticket: None,
             outbox: Vec::new(),
             tombstones: Vec::new(),
         }
@@ -234,6 +241,7 @@ pub enum RemoteEvent {
         name: String,
         state: String,
         endpoint: Option<String>,
+        room_ticket: Option<String>,
         updated_at: u64,
     },
 }
@@ -981,6 +989,7 @@ pub fn apply_action_for(account_id: &str, action: FriendAction) -> Result<Friend
                 profile_id: uuid_from_public_key(&parsed.public_key),
                 name: format!("好友 {}", &parsed.public_key[..8].to_ascii_uppercase()),
                 presence: None,
+                room_ticket: None,
                 key: Some(parsed.public_key.clone()),
                 endpoint: parsed.endpoint,
                 last_seen: None,
@@ -1198,6 +1207,7 @@ pub fn apply_remote_event_for(
                     profile_id,
                     name,
                     presence: None,
+                    room_ticket: None,
                     key: Some(from_key.clone()),
                     endpoint,
                     last_seen: Some(now_millis()),
@@ -1224,6 +1234,7 @@ pub fn apply_remote_event_for(
                         profile_id,
                         name,
                         presence: None,
+                        room_ticket: None,
                         key: Some(from_key.clone()),
                         endpoint,
                         last_seen: Some(now_millis()),
@@ -1280,6 +1291,7 @@ pub fn apply_remote_event_for(
                         profile_id,
                         name,
                         presence: None,
+                        room_ticket: None,
                         key: Some(from_key.clone()),
                         endpoint: outgoing.endpoint,
                         last_seen: Some(now_millis()),
@@ -1364,6 +1376,7 @@ pub fn apply_remote_event_for(
             name,
             state,
             endpoint,
+            room_ticket,
             updated_at,
         } => {
             if !PRESENCE_STATES.contains(&state.as_str()) {
@@ -1385,6 +1398,7 @@ pub fn apply_remote_event_for(
                     let presence_changed = entry.presence.as_deref() != Some(state.as_str());
                     let name_changed = entry.name != name;
                     let endpoint_changed = endpoint.is_some() && entry.endpoint != endpoint;
+                    let room_ticket_changed = entry.room_ticket != room_ticket;
                     let now = now_millis();
                     // Clamp future timestamps so a broken peer clock cannot keep
                     // presence "online" forever.
@@ -1394,12 +1408,13 @@ pub fn apply_remote_event_for(
                         .map(|previous| seen.saturating_sub(previous) >= 10_000)
                         .unwrap_or(true);
                     entry.presence = Some(state);
+                    entry.room_ticket = room_ticket;
                     entry.last_seen = Some(seen);
                     if let Some(endpoint) = endpoint {
                         entry.endpoint = Some(endpoint);
                     }
                     entry.name = name;
-                    if presence_changed || name_changed || endpoint_changed {
+                    if presence_changed || name_changed || endpoint_changed || room_ticket_changed {
                         visible = true;
                     }
                     if visible || last_seen_changed {
@@ -1534,6 +1549,14 @@ pub fn set_self_presence_for(
     account_id: &str,
     presence: &str,
 ) -> Result<Option<FriendSnapshot>, String> {
+    set_self_presence_with_room_for(account_id, presence, None)
+}
+
+pub fn set_self_presence_with_room_for(
+    account_id: &str,
+    presence: &str,
+    room_ticket: Option<&str>,
+) -> Result<Option<FriendSnapshot>, String> {
     if !PRESENCE_STATES.contains(&presence) {
         return Err("在线状态无效".into());
     }
@@ -1541,10 +1564,13 @@ pub fn set_self_presence_for(
         .lock()
         .map_err(|_| "好友数据存储锁已损坏".to_string())?;
     let mut snapshot = load_for_unlocked(account_id)?;
-    if snapshot.self_presence == presence {
+    let presence_changed = snapshot.self_presence != presence;
+    let room_changed = snapshot.self_room_ticket.as_deref() != room_ticket;
+    if !presence_changed && !room_changed {
         return Ok(None);
     }
     snapshot.self_presence = presence.to_string();
+    snapshot.self_room_ticket = room_ticket.map(|t| t.to_string());
     snapshot.updated_at = now_millis().max(snapshot.updated_at.saturating_add(1));
     save_snapshot_unlocked(account_id, &snapshot)?;
     Ok(Some(snapshot))
@@ -1935,6 +1961,7 @@ mod tests {
             name: "Bob".into(),
             state: "playing_server".into(),
             endpoint: Some("127.0.0.1:27731".into()),
+            room_ticket: None,
             updated_at: now_millis(),
         };
         let presence_outcome =
@@ -1984,6 +2011,7 @@ mod tests {
             profile_id: "00000000-0000-4000-8000-000000000001".into(),
             name: "Friend".into(),
             presence: Some("dancing".into()),
+            room_ticket: None,
             key: Some("cd".repeat(32)),
             endpoint: Some("127.0.0.1:1234".into()),
             last_seen: None,

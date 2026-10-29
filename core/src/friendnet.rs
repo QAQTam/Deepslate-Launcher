@@ -88,6 +88,11 @@ pub fn notify_outbox() {
     send_command(ServiceCommand::Wake);
 }
 
+/// Notify the running hub that our presence or hosted room ticket changed.
+pub fn notify_presence_changed() {
+    send_command(ServiceCommand::PresenceChanged);
+}
+
 fn send_command(command: ServiceCommand) {
     let Ok(runtime) = RUNTIME.lock() else {
         return;
@@ -372,6 +377,7 @@ pub(crate) fn parse_remote_event(kind: &str, body: &Value) -> Result<RemoteEvent
             name: string("name").unwrap_or_else(|_| "Minecraft 玩家".into()),
             state: string("state")?,
             endpoint: optional_string("endpoint"),
+            room_ticket: optional_string("room_ticket"),
             updated_at: body
                 .get("updated_at")
                 .and_then(Value::as_u64)
@@ -383,13 +389,17 @@ pub(crate) fn parse_remote_event(kind: &str, body: &Value) -> Result<RemoteEvent
 
 fn presence_body(account_id: &str, snapshot: &FriendSnapshot) -> Value {
     let (profile_id, name) = friends::self_profile_for(account_id);
-    json!({
+    let mut body = json!({
         "profile_id": profile_id,
         "name": name,
         "state": snapshot.self_presence,
         "endpoint": snapshot.network.endpoint,
         "updated_at": friends::now_millis(),
-    })
+    });
+    if let Some(ticket) = &snapshot.self_room_ticket {
+        body["room_ticket"] = json!(ticket);
+    }
+    body
 }
 
 // ── Hub ──────────────────────────────────────────────────────────────────────

@@ -414,6 +414,31 @@ pub async fn run_world_session_with_commands(
                         .await;
                 }
             }
+            "LanWorldPublished" => {
+                let Some(profile_id) = owner_profile_id.as_ref() else {
+                    continue;
+                };
+                let port = event.get("port").and_then(Value::as_u64).unwrap_or(25565) as u16;
+                let mode = event.get("mode").and_then(Value::as_str).unwrap_or("survival");
+                let world_name = target.id().unwrap_or("Minecraft World");
+                let _ = crate::tunnel::publish_world_room(
+                    profile_id,
+                    world_name,
+                    mode,
+                    "HostPlayer",
+                    8,
+                    port,
+                    crate::tunnel::RoomAccessPolicy::FriendsOnly,
+                )
+                .await;
+                let _ = events.send(emit("lan_published")).await;
+            }
+            "LanWorldClosed" => {
+                if let Some(profile_id) = owner_profile_id.as_ref() {
+                    let _ = crate::tunnel::unpublish_world_room(profile_id).await;
+                }
+                let _ = events.send(emit("lan_closed")).await;
+            }
             "Status" => {
                 let request_matches = if sent {
                     event_request == request
@@ -464,6 +489,10 @@ pub async fn run_world_session_with_commands(
                 let _ = events.send(emit(state)).await;
             }
             "WorldClosed" if sent && event_request == request => {
+                if let Some(profile_id) = owner_profile_id.as_ref() {
+                    let _ = crate::tunnel::unpublish_world_room(profile_id).await;
+                    let _ = crate::tunnel::leave_remote_room().await;
+                }
                 let _ = events.send(emit("closed")).await;
                 return Ok(());
             }

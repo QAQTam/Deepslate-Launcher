@@ -27,7 +27,9 @@ pub mod runtime;
 pub mod saves;
 pub mod server;
 pub mod server_ping;
+pub mod tunnel;
 pub mod versions;
+pub mod voice;
 pub mod worldgen;
 
 pub use auth::AuthMethod;

@@ -2,10 +2,18 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// 获取默认根目录
+/// 获取默认根目录（优先使用深板岩 DeepslateLauncher，兼容旧版 ObsidianLauncher）
 pub fn get_default_root_dir() -> Result<PathBuf, String> {
     dirs::home_dir()
-        .map(|p| p.join("Games").join("ObsidianLauncher"))
+        .map(|p| {
+            let primary = p.join("Games").join("DeepslateLauncher");
+            let legacy = p.join("Games").join("ObsidianLauncher");
+            if !primary.exists() && legacy.exists() {
+                legacy
+            } else {
+                primary
+            }
+        })
         .ok_or_else(|| "无法获取默认目录".to_string())
 }
 
@@ -209,39 +217,81 @@ pub fn config_path() -> Result<PathBuf, String> {
         .ok_or_else(|| "无法获取可执行文件目录".to_string())
 }
 
+/// 检查是否存在配置文件（config.toml 或旧版 config.json）
+pub fn exists() -> bool {
+    config_path()
+        .map(|p| p.join("config.toml").exists() || p.join("config.json").exists())
+        .unwrap_or(false)
+}
+
+/// 返回当前生效或预期的配置文件路径（优先 config.toml，降级兼容 config.json）
+pub fn config_file_path() -> Result<PathBuf, String> {
+    let base = config_path()?;
+    let toml_path = base.join("config.toml");
+    if toml_path.exists() {
+        return Ok(toml_path);
+    }
+    let json_path = base.join("config.json");
+    if json_path.exists() {
+        return Ok(json_path);
+    }
+    Ok(toml_path)
+}
+
 pub fn load() -> Result<AppConfig, String> {
-    let path = config_path()?.join("config.json");
-    if path.exists() {
-        let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&content).map_err(|e| e.to_string())
+    let base = config_path()?;
+    let toml_path = base.join("config.toml");
+    let json_path = base.join("config.json");
+
+    if toml_path.exists() {
+        let content = fs::read_to_string(&toml_path).map_err(|e| e.to_string())?;
+        toml::from_str(&content).map_err(|e| format!("解析 config.toml 失败: {e}"))
+    } else if json_path.exists() {
+        // 平滑迁移：读取旧版 config.json，并在内存反序列化后落盘为 config.toml
+        let content = fs::read_to_string(&json_path).map_err(|e| e.to_string())?;
+        let config: AppConfig =
+            serde_json::from_str(&content).map_err(|e| format!("解析旧版 config.json 失败: {e}"))?;
+        let _ = save(&config);
+        Ok(config)
     } else {
         Ok(AppConfig::default())
     }
 }
 
 pub fn save(config: &AppConfig) -> Result<(), String> {
-    let path = config_path()?.join("config.json");
+    let path = config_path()?.join("config.toml");
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let content = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
+    let content =
+        toml::to_string_pretty(config).map_err(|e| format!("序列化 config.toml 失败: {e}"))?;
     fs::write(&path, content).map_err(|e| e.to_string())
 }
 
-/// 删除用户配置（保留档案文件，仅重置 config.json 为默认值）
+/// 删除用户配置（保留档案文件，仅重置 config.toml 为默认值）
 pub fn reset_to_default() -> Result<(), String> {
+    let base = config_path()?;
+    let json_path = base.join("config.json");
+    if json_path.exists() {
+        let _ = fs::remove_file(&json_path);
+    }
     save(&AppConfig::default())
 }
 
-/// 重置所有配置（删除 config.json 和 profiles.json，重新进入首次配置）
+/// 重置所有配置（删除 config.toml、旧版 config.json 和 profiles.json，重新进入首次配置）
 pub fn reset_all() -> Result<(), String> {
-    let config_json = config_path()?.join("config.json");
+    let base = config_path()?;
+    let toml_path = base.join("config.toml");
+    let json_path = base.join("config.json");
     let profiles_json = crate::profiles::path()?;
     if profiles_json.exists() {
         fs::remove_file(&profiles_json).map_err(|e| e.to_string())?;
     }
-    if config_json.exists() {
-        fs::remove_file(&config_json).map_err(|e| e.to_string())?;
+    if toml_path.exists() {
+        fs::remove_file(&toml_path).map_err(|e| e.to_string())?;
+    }
+    if json_path.exists() {
+        fs::remove_file(&json_path).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -294,5 +344,26 @@ mod security_tests {
         let config: super::AppConfig = serde_json::from_value(value).unwrap();
         assert_eq!(config.friend_port, super::default_friend_port());
         assert!(config.friend_advertise.is_empty());
+    }
+
+    #[test]
+    fn toml_roundtrip() {
+        let original = super::AppConfig::default();
+        let encoded = toml::to_string_pretty(&original).unwrap();
+        let decoded: super::AppConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.version, original.version);
+        assert_eq!(decoded.root_dir, original.root_dir);
+        assert_eq!(decoded.ui_mode, original.ui_mode);
+        assert_eq!(decoded.server_port, original.server_port);
+    }
+
+    #[test]
+    fn json_migrates_to_toml_struct() {
+        let original = super::AppConfig::default();
+        let json_str = serde_json::to_string(&original).unwrap();
+        let decoded_from_json: super::AppConfig = serde_json::from_str(&json_str).unwrap();
+        let toml_str = toml::to_string_pretty(&decoded_from_json).unwrap();
+        let decoded_from_toml: super::AppConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(decoded_from_toml.root_dir, original.root_dir);
     }
 }

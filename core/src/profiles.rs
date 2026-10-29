@@ -67,10 +67,9 @@ impl ProfileStore {
     }
 }
 
-/// 档案文件路径（v2+: root_dir/config/，旧版降级到 ~/.config/obsidian-launcher/）
+/// 档案文件路径（v2+: root_dir/config/，旧版降级到 ~/.config/deepslate-launcher/，兼容旧版 obsidian-launcher/）
 pub fn path() -> Result<PathBuf, String> {
-    let config_path = crate::config::config_path()?.join("config.json");
-    if config_path.exists() {
+    if crate::config::exists() {
         let config = crate::config::load()?;
         if config.version >= 2 {
             return Ok(PathBuf::from(&config.root_dir)
@@ -87,7 +86,15 @@ pub fn path() -> Result<PathBuf, String> {
         }
     }
     dirs::config_dir()
-        .map(|p| p.join("obsidian-launcher").join("profiles.json"))
+        .map(|p| {
+            let primary = p.join("deepslate-launcher").join("profiles.json");
+            let legacy = p.join("obsidian-launcher").join("profiles.json");
+            if !primary.exists() && legacy.exists() {
+                legacy
+            } else {
+                primary
+            }
+        })
         .ok_or_else(|| "无法获取配置目录".to_string())
 }
 

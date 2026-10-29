@@ -84,6 +84,7 @@ async fn existing_world_saves_and_client_exits() {
         game_dir: paths.game_dir,
         instance_dir: paths.instance_dir,
         map_config: Some(config.clone()),
+        custom_jvm_tuning: None,
         username: "BridgeTest".into(),
         uuid: core::profiles::uuid_from_name("BridgeTest"),
         runtime_dir: "/usr/lib/jvm/java-25-openjdk-amd64".into(),

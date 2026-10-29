@@ -234,9 +234,7 @@ enum PendingAction {
 
 impl App {
     fn boot() -> (Self, Task<Message>) {
-        let config_exists = launcher::config::config_path()
-            .map(|p| p.join("config.json").exists())
-            .unwrap_or(true);
+        let config_exists = launcher::config::exists();
         let config = launcher::config::load().unwrap_or_default();
         let onboarding = !config_exists || config.onboarding_version == Some(0);
         // 兼容旧版本：以前把“同意”只存在 config.json 里；现在以
@@ -450,6 +448,9 @@ enum Message {
     FriendNetworkSynced(String, Result<(), String>),
     FriendServiceStopped,
     FriendPresenceReset(Result<(), String>),
+    JoinFriendRoom(String),
+    RemoteRoomJoined(Result<String, String>),
+    LeaveFriendRoom,
     FriendSyncFinished(String, Result<bool, String>),
     FriendBackgroundSyncFinished(Result<bool, String>),
     JavaLoaded(Vec<launcher::launch::JavaInfo>),
@@ -503,6 +504,9 @@ enum Message {
     SaveDuplicated(Result<String, String>),
     SaveDeletePressed(String),
     SaveDeleted(Result<String, String>),
+    BindMapVersion(String),
+    ClearMapConfig(String),
+    MapConfigUpdated(Result<String, String>),
     MapImportPathChanged(String),
     ImportMap,
     MigrationPick,
@@ -1022,6 +1026,31 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::FriendServiceStopped => Task::none(),
+        Message::JoinFriendRoom(ticket) => {
+            app.status = "正在通过 P2P 打洞连接好友房间...".into();
+            Task::perform(
+                async move { launcher::tunnel::join_remote_room(&ticket, 0).await },
+                Message::RemoteRoomJoined,
+            )
+        }
+        Message::RemoteRoomJoined(Ok(local_addr)) => {
+            app.status = format!("P2P 隧道已建立 ({local_addr})，正在加入游戏...");
+            start_launch(
+                app,
+                Some(launcher::launch::QuickPlayTarget::Multiplayer(local_addr)),
+            )
+        }
+        Message::RemoteRoomJoined(Err(error)) => {
+            app.status = format!("连接好友房间失败: {error}");
+            Task::none()
+        }
+        Message::LeaveFriendRoom => {
+            app.status = "已断开与好友房间的连接".into();
+            Task::perform(
+                async { launcher::tunnel::leave_remote_room().await },
+                |_| Message::Tick(std::time::Instant::now()),
+            )
+        }
         Message::FriendPresenceReset(Ok(())) => Task::none(),
         Message::FriendPresenceReset(Err(error)) => {
             app.status = format!("恢复在线状态失败: {error}");
@@ -1491,6 +1520,24 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             load_saves_task(app)
         }
         Message::SaveEnter(id) => {
+            if let Some(world) = app.saves.iter().find(|w| w.id == id) {
+                if let Some(custom) = &world.custom_config {
+                    if let Some(locked_v) = &custom.version {
+                        if let Some(sel_v) = &app.selected_version {
+                            if sel_v.id != *locked_v
+                                && app.pending_world_enter.as_deref() != Some(id.as_str())
+                            {
+                                app.pending_world_enter = Some(id);
+                                app.status = format!(
+                                    "提示：该地图已锁定版本为【{locked_v}】（当前全局选中的是【{}】），将自动使用锁定版本启动。再次点击确认进入",
+                                    sel_v.id
+                                );
+                                return Task::none();
+                            }
+                        }
+                    }
+                }
+            }
             if app.pending_world_enter.as_deref() != Some(id.as_str()) {
                 app.pending_world_enter = Some(id);
                 app.status =
@@ -1603,6 +1650,42 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::SaveDeleted(Err(e)) => {
             app.status = format!("删除存档失败: {}", e);
+            Task::none()
+        }
+        Message::BindMapVersion(id) => {
+            let Some(version) = &app.selected_version else {
+                app.status = "请先在上方版本选择器选中要锁定的版本".to_string();
+                return Task::none();
+            };
+            let mut map_config = launcher::maps::load_config(&app.config, &id).unwrap_or_default();
+            map_config.version = Some(version.id.clone());
+            let config = app.config.clone();
+            let v_id = version.id.clone();
+            let save_id = id.clone();
+            Task::perform(
+                async move {
+                    launcher::maps::save_config(&config, &save_id, &map_config)?;
+                    Ok(format!("已成功将地图运行版本锁定为【{v_id}】"))
+                },
+                Message::MapConfigUpdated,
+            )
+        }
+        Message::ClearMapConfig(id) => {
+            let config = app.config.clone();
+            Task::perform(
+                async move {
+                    launcher::maps::remove_config(&config, &id)?;
+                    Ok("已清除该地图专属配置，恢复继承全局设置".to_string())
+                },
+                Message::MapConfigUpdated,
+            )
+        }
+        Message::MapConfigUpdated(Ok(msg)) => {
+            app.status = msg;
+            load_saves_task(app)
+        }
+        Message::MapConfigUpdated(Err(e)) => {
+            app.status = format!("更新地图配置失败: {e}");
             Task::none()
         }
         Message::OnboardingNext => {
@@ -3169,12 +3252,30 @@ fn start_launch_with_creation(
     } else {
         None
     };
-    let version = match (enhanced, app.selected_version.clone()) {
-        (true, _) => None,
-        (false, Some(version)) => Some(version),
-        (false, None) => {
-            app.status = "请先选择一个版本".to_string();
-            return Task::none();
+    let target_map_id = match &quick_play {
+        Some(launcher::launch::QuickPlayTarget::Singleplayer(id)) => Some(id.clone()),
+        _ => managed_world
+            .as_ref()
+            .and_then(|target| target.id())
+            .map(str::to_string),
+    };
+    let map_launch_config = target_map_id
+        .as_deref()
+        .and_then(|id| launcher::maps::load_config(&app.config, id).ok())
+        .filter(|c| !c.is_empty());
+    let effective =
+        launcher::maps::EffectiveLaunchConfig::resolve(&app.config, map_launch_config.as_ref());
+
+    let version_id = if let Some(locked_v) = map_launch_config.as_ref().and_then(|c| c.version.clone()) {
+        locked_v
+    } else {
+        match (enhanced, app.selected_version.clone()) {
+            (true, _) => String::new(),
+            (false, Some(version)) => version.id,
+            (false, None) => {
+                app.status = "请先选择一个版本".to_string();
+                return Task::none();
+            }
         }
     };
     let Some(profile) = app.selected_profile.clone() else {
@@ -3225,27 +3326,43 @@ fn start_launch_with_creation(
         .as_ref()
         .and_then(|target| target.id())
         .map(str::to_string);
+    let runtime_dir = effective
+        .java_path
+        .as_ref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(java.path));
+    let custom_jvm_tuning = if effective.memory_mb > 0 || effective.gc != "default" {
+        Some(launcher::launch::JvmTuning {
+            gc: effective.gc.clone(),
+            max_memory_mb: effective.memory_mb,
+            compact_object_headers: app.config.enhanced_compact_object_headers,
+        })
+    } else {
+        None
+    };
+
     let mut opts = launcher::launch::LaunchOptions {
-        version: version.as_ref().map(|v| v.id.clone()).unwrap_or_default(),
+        version: version_id.clone(),
         game_dir: runtime.game_dir,
         instance_dir: runtime.instance_dir,
         map_config: Some(config.clone()),
+        custom_jvm_tuning,
         username: profile.name,
         uuid: profile.uuid,
-        runtime_dir: std::path::PathBuf::from(java.path),
+        runtime_dir,
         auth_method: profile.auth_method,
         access_token: profile.access_token,
         download_concurrency: app.config.download_concurrency,
         quick_play: if enhanced { None } else { quick_play.clone() },
         managed_world,
         branding,
-        apply_game_defaults: app.config.apply_game_defaults,
-        disable_multiplayer: app.config.disable_multiplayer,
-        disable_chat: app.config.disable_chat,
-        fullscreen: app.config.fullscreen,
-        window_width: app.config.window_width,
-        window_height: app.config.window_height,
-        graphics_backend: app.config.graphics_backend.clone(),
+        apply_game_defaults: effective.apply_game_defaults,
+        disable_multiplayer: effective.disable_multiplayer,
+        disable_chat: effective.disable_chat,
+        fullscreen: effective.fullscreen,
+        window_width: effective.window_width,
+        window_height: effective.window_height,
+        graphics_backend: effective.graphics_backend.clone(),
     };
 
     app.status = match &quick_play {
@@ -3260,7 +3377,11 @@ fn start_launch_with_creation(
         }
         None => format!(
             "正在启动 {} ...",
-            version.as_ref().map(|v| v.id.as_str()).unwrap_or("26.3")
+            if !version_id.is_empty() {
+                version_id.as_str()
+            } else {
+                "26.3"
+            }
         ),
     };
     app.launching = true;
@@ -3798,6 +3919,7 @@ mod switch_perf {
                 icon: None,
                 dir: std::path::PathBuf::from("/tmp/sample-world"),
             },
+            custom_config: None,
         }];
         app.config.saved_servers = vec![launcher::config::SavedServer {
             name: "本地测试服".into(),

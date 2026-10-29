@@ -48,7 +48,7 @@ cargo build --release --workspace
 
 提交时把 Bridge 源码和更新后的 `core/assets/deepslate-bridge-*.jar` 一起提交。Gradle 缓存与构建输出不进入 Git。
 
-数据默认位于 `~/Games/ObsidianLauncher`（沿用历史路径，避免已有游戏文件失效）。
+数据默认位于 `~/Games/DeepslateLauncher`（首次自动创建；若存在旧版 `~/Games/ObsidianLauncher` 则自动兼容沿用）。
 
 ## 开发文档
 
@@ -150,7 +150,7 @@ Minecraft 世界目录，额外带一个游戏会忽略的 `map.json`；游戏�
 版本选择器展示正式版清单和已安装版本；快照不在当前产品路径中。
 
 「启动」页的“快速加入服务器”使用 `--quickPlayMultiplayer <host:port>`，
-历史地址保存在 `config.json` 的 `recent_servers`。
+历史地址保存在 `config.toml` 的 `recent_servers`。
 
 ## 本地服务端
 
